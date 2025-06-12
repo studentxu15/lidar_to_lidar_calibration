@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+    <node pkg="lidar_to_lidar_calibration" type="lidar_to_lidar_calibration" name="calibration_test" output="screen">
+        <rosparam subst_value="true">
+            source_lidar_topic: "/mid360_front_t"
+            target_lidar_topic: "/velodyne_points"
+            initial_topic: "initialpose"
+            flag_topic: "calibration_flag"
+            merged_cloud_topic: "/calibration/merged_cloud"
+            source_lidar_queue_size: 20
+            icp_score_threshold: 0.25
+            calib_x: 0.0
+            calib_y: 0.0
+            calib_z: 0.0
+            calib_roll: 0.0
+            calib_pitch: 0.0
+            calib_yaw: 0.0
+            trigger_calculation: false
+        </rosparam>
+    </node>
+</launch>
