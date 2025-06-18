@@ -15,6 +15,7 @@
             calib_roll: 0.0
             calib_pitch: 0.0
             calib_yaw: 0.0
+            board_l: 0.3
             trigger_calculation: false
         </rosparam>
     </node>
