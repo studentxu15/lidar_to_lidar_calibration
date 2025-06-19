@@ -1,22 +1,19 @@
 <?xml version="1.0"?>
 <launch>
+    <arg name="calibration_rviz" default="0" />
+    <arg name="calibration_open_lidar_sdk" default="0" />
+
     <node pkg="lidar_to_lidar_calibration" type="lidar_to_lidar_calibration" name="calibration_test" output="screen">
         <rosparam subst_value="true">
             source_lidar_topic: "/mid360_front_t"
             target_lidar_topic: "/velodyne_points"
             initial_topic: "initialpose"
             flag_topic: "calibration_flag"
-            merged_cloud_topic: "/calibration/merged_cloud"
             source_lidar_queue_size: 20
             icp_score_threshold: 0.25
-            calib_x: 0.0
-            calib_y: 0.0
-            calib_z: 0.0
-            calib_roll: 0.0
-            calib_pitch: 0.0
-            calib_yaw: 0.0
+            svd_threshold: 1.0
             board_l: 0.3
-            trigger_calculation: false
+            tf_publish: true
         </rosparam>
     </node>
 
@@ -25,4 +22,49 @@
             flag_topic: "calibration_flag"
         </rosparam>
     </node>
+
+    <group if="$(arg calibration_rviz)">
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="calibration_rviz_1" args="-d $(find lidar_to_lidar_calibration)/include/rviz/mid360.rviz" />
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="calibration_rviz_2" args="-d $(find lidar_to_lidar_calibration)/include/rviz/velodyne.rviz" />
+    </group>
+
+    <group if="$(arg calibration_open_lidar_sdk)">
+        <node name="scan_laser" pkg="rslidar_sdk" type="rslidar_sdk_node" output="screen">
+            <param name="lidar_type" value="RSHELIOS_16P" />
+            <rosparam subst_value="true">
+                ros_frame_id: base_laser
+            </rosparam>
+        </node>
+
+        <node name="rs_to_velodyne" pkg="rs_to_velodyne" type ="rs_to_velodyne" args="XYZIRT XYZIRT" output="screen" />
+
+        <node name="livox_lidar_publisher_mid360" pkg="livox_ros_driver2" type="livox_ros_driver2_node" required="true" output="log" args="100000000000000">
+            <param name="xfer_format" value="1"/>
+            <param name="multi_topic" value="1"/>
+            <param name="data_src" value="0"/>
+            <param name="publish_freq" type="double" value="10.0"/>
+            <param name="output_data_type" value="0"/>
+            <param name="cmdline_str" type="string" value="100000000000000"/>
+            <param name="cmdline_file_path" type="string" value="livox_test.lvx"/>
+            <param name="user_config_path" type="string" value="$(find bringup)/scripts/MID360_config.json"/>
+            <param name="frame_id" type="string" value="mid360_frame"/>
+            <param name="enable_lidar_bag" type="bool" value="true"/>
+            <param name="enable_imu_bag" type="bool" value="false"/>
+
+            <remap from="/livox/lidar_192_168_147_11" to="/mid360_front"/>
+            <remap from="/livox/lidar_192_168_147_12" to="/mid360_back"/>
+        </node>
+
+        <node pkg="livox_repub" type="livox_repub_online_node" name="livox_repub_online_back" output="screen" respawn="true" >
+            <param name="livox_raw_message_name"    type="string"   value="/mid360_back" />
+            <param name="livox_points_message_name"    type="string"   value="/mid360_back_s" />
+            <param name="livox_frame"    type="string"   value="mid360_frame" />
+        </node>
+
+        <node pkg="livox_repub" type="livox_repub_online_node" name="livox_repub_online_front" output="screen" respawn="true" >
+            <param name="livox_raw_message_name"    type="string"   value="/mid360_front" />
+            <param name="livox_points_message_name"    type="string"   value="/mid360_front_s" />
+            <param name="livox_frame"    type="string"   value="mid360_frame" />
+        </node>
+    </group>
 </launch>

@@ -11,13 +11,16 @@ public:
     ros::Subscriber header_sub; // Subscriber for initial pose data
 
     ros::Publisher merged_cloud_pub; // Publisher for merged point cloud
-    ros::Publisher target_cloud_repub;
+    ros::Publisher target_filtered_pub;
     ros::Publisher calib_result_pub; // Publisher for source LiDAR point clouds
     ros::Publisher pub_mark_A;
     ros::Publisher pub_mark_B;
     ros::Publisher boundary_pub;
-    ros::Publisher centrol;
-    ros::Publisher mesh_pub;
+    ros::Publisher center_A_pub;
+    ros::Publisher all_centroid_A_pub;
+    ros::Publisher all_centroid_B_pub;
+    ros::Publisher edge_pub;
+    ros::Publisher feedback_flag_pub;
 
     deque<PointCloudPtr> source_lidar_queue; // Queue for source LiDAR point clouds
     deque<PointXYZIRTCloudPtr> target_lidar_queue; // Queue for source LiDAR point clouds
@@ -54,21 +57,22 @@ public:
 
     LidarCalibration() : server(reconfigure_mutex)
     {
-        // Initialize subscribers for source and target LiDAR topics
         source_lidar_sub = nh.subscribe(source_lidar_topic, 10, &LidarCalibration::sourceLidarCallback, this);
         target_lidar_sub = nh.subscribe(target_lidar_topic, 10, &LidarCalibration::targetLidarCallback, this);
         initialpose_sub = nh.subscribe(initial_topic, 10, &LidarCalibration::initialPoseCallback, this);
         header_sub = nh.subscribe(flag_topic, 10, &LidarCalibration::FlagCallback, this);
 
-        // merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>(merged_cloud_topic, 10);
-        merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/merge_cloud", 10);
-        target_cloud_repub = nh.advertise<sensor_msgs::PointCloud2>(target_lidar_topic + "/filter", 10);
-        boundary_pub = nh.advertise<sensor_msgs::PointCloud2>(target_lidar_topic + "_mesh", 10);
+        merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/filtered", 10);
+        target_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/filtered", 10);
+        boundary_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/boundary_cloud", 10);
         center_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/center", 10);
-        mesh_pub = nh.advertise<sensor_msgs::PointCloud2>(target_lidar_topic + "_edge", 10);
+        edge_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/edge_cloud", 10);
+        all_centroid_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration" + source_lidar_topic + "/all_centroid", 10);
+        all_centroid_B_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration" + target_lidar_topic + "/all_centroid", 10);
         calib_result_pub = nh.advertise<geometry_msgs::PoseStamped>(calibration_result_topic, 10);
         pub_mark_A = nh.advertise<visualization_msgs::Marker>(marker_A_topic, 10);
         pub_mark_B = nh.advertise<visualization_msgs::Marker>(marker_B_topic, 10);
+        feedback_flag_pub = nh.advertise<std_msgs::Header>(flag_topic, 10);
         f_c = boost::bind(&LidarCalibration::dynamicReconfigureCallback, this, _1, _2);
         server.setCallback(f_c);
 
@@ -113,43 +117,6 @@ public:
         transformLidarToLidar[6] = q.w();
     }
 
-    // Eigen 欧拉角(角度值)转四元数
-    Eigen::Quaterniond eulor_deg_to_q(double roll_deg, double pitch_deg, double yaw_deg)
-    {
-        double roll = roll_deg * M_PI / 180.0;
-        double pitch = pitch_deg * M_PI / 180.0;
-        double yaw = yaw_deg * M_PI / 180.0;
-        Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
-        q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
-            * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
-            * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
-        return q;
-    }
-
-    // 发布点云的函数
-    void publishPointCloudMsg(const ros::Publish& publisher,
-                            const std_msgs::Header& header,
-                            const PointCloudPtr output_cloud)
-    {
-        sensor_msgs::PointCloud2 output_msg;
-        pcl::toROSMsg(*output_cloud, output_msg);
-        output_msg.header = header;
-        output_msg.header.stamp = ros::Time::now();
-        publisher.publish(output_msg);
-    }
-
-    // 重载发布点云的函数
-    void publishPointCloudMsg(const ros::Publish& publisher,
-                            const std_msgs::Header& header,
-                            const PointXYZIRTCloudPtr output_cloud)
-    {
-        sensor_msgs::PointCloud2 output_msg;
-        pcl::toROSMsg(*output_cloud, output_msg);
-        output_msg.header = header;
-        output_msg.header.stamp = ros::Time::now();
-        publisher.publish(output_msg);
-    }
-
     void sourceLidarCallback(const sensor_msgs::PointCloud2ConstPtr& msg)
     {
         source_frame = msg->header.frame_id;
@@ -184,11 +151,6 @@ public:
         source_merge_cloud = mergePointClouds(source_lidar_queue);
 
         // 发布融合后的点云
-        // sensor_msgs::PointCloud2 merged_msg;
-        // pcl::toROSMsg(*source_merge_cloud, merged_msg);
-        // merged_msg.header = msg->header;
-        // merged_msg.header.stamp = ros::Time::now();
-        // merged_cloud_pub.publish(merged_msg);
         publishPointCloudMsg(merged_cloud_pub, msg->header, source_merge_cloud);
 
         // 将点云进行过滤后提取中心点，并发布出去 plan_cloud
@@ -214,35 +176,37 @@ public:
             centroid_source.x = sum_x / num_points;
             centroid_source.y = sum_y / num_points;
             centroid_source.z = sum_z / num_points;
-            centroid_source.intensity = 10.0f;
+            centroid_source.intensity = 200.0f;
             plan_cloud->points.push_back(centroid_source);
         }
 
-        sensor_msgs::PointCloud2 output_msg;
-        pcl::toROSMsg(*plan_cloud, output_msg);
-        output_msg.header = msg->header;
-        output_msg.header.stamp = ros::Time::now();
-        center_A_pub.publish(output_msg);
-
-
+        // 发布中心点
+        publishPointCloudMsg(center_A_pub, msg->header, plan_cloud);
+        if (!source_center_cloud->points.empty())
+        {
+            publishPointCloudMsg(all_centroid_A_pub, msg->header, source_center_cloud);
+        }
+            
     }
+
     void targetLidarCallback(const sensor_msgs::PointCloud2ConstPtr& msg)
     {
-        
-        // pcl::fromROSMsg(*msg, *target_current_cloud);
-        // target_frame = msg->header.frame_id; // Update target frame from message header
+        target_frame = msg->header.frame_id;
         PointXYZIRTCloudPtr cloud(new PointXYZIRTCloud);
         pcl::fromROSMsg(*msg, *cloud);
         target_raw_cloud = cloud;
-        target_frame = msg->header.frame_id; // Update target frame from message header
+
+        // 将点云添加到队列中，并融合点云为 target_merge_cloud
         target_lidar_queue.push_back(target_raw_cloud);
         if (target_lidar_queue.size() > source_lidar_queue_size)
         {
             target_lidar_queue.pop_front();
         }
         PointXYZIRTCloudPtr target_merge_cloud = mergePointClouds(target_lidar_queue);
+        
 
-
+        // 箱体滤波，保留 箱体内的点云为 target_current_cloud
+        target_current_cloud->points.clear();
         Eigen::Vector3d translation(box_B_x, box_B_y, box_B_z);
         Eigen::Quaterniond quaternion = eulor_deg_to_q(box_B_roll, box_B_pitch, box_B_yaw);
         Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
@@ -259,7 +223,8 @@ public:
                 target_current_cloud->points.push_back(pt);
             }
         }
-        //
+
+        // 将每一条线的左右端点保存到 ring_boundary_points
         std::map<uint16_t, std::pair<PointXYZIRT, PointXYZIRT>> ring_boundary_points;
         for (const auto& point : target_current_cloud->points)
         {
@@ -272,14 +237,20 @@ public:
             {
                 auto& left_point = ring_boundary_points[ring].first;
                 auto& right_point = ring_boundary_points[ring].second;
-                if (point.x < left_point.x)
+                // 通过角度值找边界
+                float left_angle = std::atan2(left_point.y, left_point.x);
+                float right_angle = std::atan2(right_point.y, right_point.x);
+                float this_angle = std::atan2(point.y, point.x);
+                if (this_angle > left_angle)
                 {
                     left_point = point;
                 }
-                if (point.x > right_point.x)
+                else if (this_angle < right_angle)
                 {
                     right_point = point;
                 }
+
+                // 缺乏横跨-180/180度线的解决方法，因实际用不到，暂时不处理
             }
         }
 
@@ -289,8 +260,8 @@ public:
             rings.push_back(kv.first);
         }
         std::sort(rings.begin(), rings.end());
-        PointCloudPtr group(new PointCloud);
-        PointCloudPtr edge_cloud(new PointCloud);
+        PointCloudPtr edge_cloud(new PointCloud); // 边界点
+        // 计算中心点坐标
         float prev_x = 0.0f;
         float prev_y = 0.0f;
         float prev_z = 0.0f;
@@ -311,10 +282,13 @@ public:
         prev_x /= rings.size();
         prev_y /= rings.size();
         prev_z /= rings.size();
+
+        // 生成四边形，保存到点云group中
         float dis_l = board_l / std::sqrt(2);
         float step = 0.002f;  // 0.5cm
         float point_start = 0.0f;
         float point_end = dis_l;
+        PointCloudPtr group(new PointCloud);
         for (float y = point_start; y <= point_end; y += step)
         {
             PointType pt1, pt2, pt3, pt4;
@@ -344,6 +318,7 @@ public:
             group->points.push_back(pt4);
         }
 
+        // 生成的四边形与边界点进行ndt+icp配准
         if (!edge_cloud->empty() && !group->empty())
         {
             pcl::NormalDistributionsTransform<PointType, PointType> ndt;
@@ -381,7 +356,7 @@ public:
                 ROS_WARN("ICP score exceeds threshold, calibration failed.");
             }
 
-            //
+            // 计算变换后的中心点 centroid_target，并添加到group
             float sum_x = 0.0f;
             float sum_y = 0.0f;
             float sum_z = 0.0f;
@@ -399,37 +374,22 @@ public:
             group->points.push_back(centroid_target);
         }
 
+        // 发布生成的四边形 group
+        publishPointCloudMsg(boundary_pub, msg->header, group);
 
+        // 发布边缘点
+        publishPointCloudMsg(edge_pub, msg->header, edge_cloud);
 
-        // PointXYZIRTCloudPtr boundary_cloud(new PointXYZIRTCloud);
-        // for (const auto& kv : ring_boundary_points)
-        // {
-        //     boundary_cloud->points.push_back(kv.second.first);
-        //     boundary_cloud->points.push_back(kv.second.second);
-        // }
-        sensor_msgs::PointCloud2 output_msg;
-        // pcl::toROSMsg(*boundary_cloud, output_msg);
-        
-        pcl::toROSMsg(*group, output_msg);
-        output_msg.header = msg->header;
-        output_msg.header.stamp = ros::Time::now();
-        boundary_pub.publish(output_msg);
+        // 发布过滤后的点云
+        publishPointCloudMsg(target_filtered_pub, msg->header, target_current_cloud);
 
-        sensor_msgs::PointCloud2 edge_msg;
-        pcl::toROSMsg(*edge_cloud, edge_msg);
-        edge_msg.header = msg->header;
-        edge_msg.header.stamp = ros::Time::now();
-
-        mesh_pub.publish(edge_msg);
-
-        //
-        sensor_msgs::PointCloud2 merged_msg;
-        pcl::toROSMsg(*target_current_cloud, merged_msg);
-        merged_msg.header = msg->header;
-        merged_msg.header.stamp = ros::Time::now();
-        target_cloud_repub.publish(merged_msg);
+        if (!target_center_cloud->points.empty())
+        {
+            publishPointCloudMsg(all_centroid_B_pub, msg->header, target_center_cloud);
+        }
     }
 
+    // 给定初始位姿(废弃)
     void initialPoseCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr& msg)
     {
         // Extract the transformation from the initial pose message
@@ -442,75 +402,108 @@ public:
         transformLidarToLidar[5] = msg->pose.pose.orientation.z;
         transformLidarToLidar[6] = msg->pose.pose.orientation.w;
         ROS_INFO("Calibration started");
-        Computer_calib();
+        // Computer_calib();
     }
+
+    // Flag订阅
     void FlagCallback(const std_msgs::HeaderConstPtr& msg)
     {
-        if (msg->frame_id == "calibration_start")
+        if (msg->frame_id == "calibration_start") // 清空中心点
         {
             ROS_INFO("Calibration started");
-            // Computer_calib();
             source_center_cloud->points.clear();
             target_center_cloud->points.clear();
+            publishflag(0);
         }
-        else if (msg->frame_id == "calibration_record_points")
+        else if (msg->frame_id == "calibration_record_points") // 记录中心点
         {
             // source_center_cloud->points.push_back(centroid_source);
             // target_center_cloud->points.push_back(centroid_target);
-            // test
-
+            // printf("Number of recorded points: %ld\n", target_center_cloud->points.size());
+            
+            // //  test
             PointType pt1a,pt1b,pt2a,pt2b,pt3a,pt3b,pt4a,pt4b,pt5a,pt5b;
             pt1a.x = 1.1;
             pt1a.y = 2.7;
             pt1a.z = 5.9;
+            pt1a.intensity = 10.0;
             pt1b.x = -1.96905;
             pt1b.y = 3.0694702;
             pt1b.z = 4.32063;
+            pt1b.intensity = 200.0;
             source_center_cloud->points.push_back(pt1a);
             target_center_cloud->points.push_back(pt1b);
 
             pt2a.x = 3.4;
             pt2a.y = 1.0;
             pt2a.z = 0.2;
+            pt2a.intensity = 10.0;
             pt2b.x = 2.9981243;
             pt2b.y = 0.48969842;
             pt2b.z = 1.26417786;
+            pt2b.intensity = 200.0;
             source_center_cloud->points.push_back(pt2a);
             target_center_cloud->points.push_back(pt2b);
 
             pt3a.x = 7.9;
             pt3a.y = 3.8;
             pt3a.z = 2.1;
+            pt3a.intensity = 10.0;
             pt3b.x = 5.8514683;
             pt3b.y = 3.625053;
             pt3b.z = 4.9693063;
+            pt3b.intensity = 200.0;
             source_center_cloud->points.push_back(pt3a);
             target_center_cloud->points.push_back(pt3b);
 
             pt4a.x = 4.3;
             pt4a.y = 6.7;
             pt4a.z = 9.3;
+            pt4a.intensity = 10.0;
             pt4b.x = -0.93137337;
             pt4b.y = 7.6165165;
             pt4b.z = 8.326579;
+            pt4b.intensity = 200.0;
             source_center_cloud->points.push_back(pt4a);
             target_center_cloud->points.push_back(pt4b);
 
             pt5a.x = 0.4;
             pt5a.y = 5.6;
             pt5a.z = 3.2;
+            pt5a.intensity = 10.0;
             pt5b.x = -0.780418226;
             pt5b.y = 5.4775840;
             pt5b.z = 1.324280886;
+            pt5b.intensity = 200.0;
             source_center_cloud->points.push_back(pt5a);
             target_center_cloud->points.push_back(pt5b);
+            int cloud_num = source_center_cloud->points.size();
+            publishflag(cloud_num);
         }
-        else if (msg->frame_id == "calibration_computer")
+        else if (msg->frame_id == "calibration_computer") // 进行计算
         {
             estimateRigidTransformationAndPublish(source_center_cloud, target_center_cloud);
         }
+        else if (msg->frame_id == "request_erase")
+        {
+            int this_seq = msg->seq;
+            if (this_seq >= 0 && this_seq < source_center_cloud->points.size())
+            {
+                source_center_cloud->points.erase(source_center_cloud->points.begin() + this_seq);
+                source_center_cloud->width = source_center_cloud->points.size();
+                source_center_cloud->height = 1;
+                source_center_cloud->is_dense = true;
+                target_center_cloud->points.erase(target_center_cloud->points.begin() + this_seq);
+                target_center_cloud->width = target_center_cloud->points.size();
+                target_center_cloud->height = 1;
+                target_center_cloud->is_dense = true;
+                int cloud_num = source_center_cloud->points.size();
+                publishflag(cloud_num);
+            }
+        }
     }
 
+    // XYZIRT点云转XYZI
     PointType convertVelodyneToXYZI(const PointXYZIRT& pt)
     {
         PointType p;
@@ -521,122 +514,7 @@ public:
         return p;
     }
 
-    void Computer_calib()
-    {
-        if (source_merge_cloud->empty() || target_current_cloud->empty())
-        {
-            ROS_WARN("Source or target point cloud is empty, skipping calibration.");
-            return;
-        }
-        //
-        PointCloudPtr target_current_cloud_new(new PointCloud);
-        target_current_cloud_new->points.resize(target_current_cloud->points.size());
-        for (size_t i = 0; i < target_current_cloud->points.size(); ++i)
-        {
-            const auto& pt_src = target_current_cloud->points[i];
-            PointType pt_dst;
-            pt_dst.x = pt_src.x;
-            pt_dst.y = pt_src.y;
-            pt_dst.z = pt_src.z;
-            pt_dst.intensity = pt_src.intensity;
-            target_current_cloud_new->points[i] = pt_dst;
-        }
-
-
-        // ndt初配准
-        pcl::NormalDistributionsTransform<PointType, PointType> ndt;
-        ndt.setTransformationEpsilon(0.01);
-        ndt.setResolution(1.0);
-        ndt.setMaximumIterations(50);
-        ndt.setInputSource(target_current_cloud_new);
-        ndt.setInputTarget(source_merge_cloud);
-        Eigen::Matrix4f initial_guess = convertToEigenMatrix4f(transformLidarToLidar);
-        PointCloudPtr aligned_cloud(new PointCloud);
-        ndt.align(*aligned_cloud, initial_guess);
-
-        // icp配准
-        pcl::IterativeClosestPoint<PointType, PointType> icp;
-        icp.setMaximumIterations(200);  // 迭代次数
-        icp.setMaxCorrespondenceDistance(0.2); // 最大对应点距离
-        icp.setTransformationEpsilon(1e-6);   // 收敛阈值
-        icp.setEuclideanFitnessEpsilon(1e-6); // 欧氏距离阈值
-        icp.setRANSACIterations(false);  // 不使用RANSAC
-        icp.setInputSource(target_current_cloud_new);
-        icp.setInputTarget(source_merge_cloud);
-        PointCloudPtr icp_aligned_cloud(new PointCloud);
-        icp.align(*icp_aligned_cloud, ndt.getFinalTransformation());
-        printf("ICP score: %f\n", icp.getFitnessScore());
-        Eigen::Matrix4f final_transformation = icp.getFinalTransformation();
-        if (icp.getFitnessScore() <= icp_score_threshold)
-        {
-            Eigen::Vector3f icp_translation = final_transformation.block<3, 1>(0, 3);
-            Eigen::Matrix3f icp_rotation = final_transformation.block<3, 3>(0, 0);
-            Eigen::Quaternionf icp_quaternion(icp_rotation);
-            transformLidarToLidar[0] = static_cast<double>(icp_translation.x());
-            transformLidarToLidar[1] = static_cast<double>(icp_translation.y());
-            transformLidarToLidar[2] = static_cast<double>(icp_translation.z());
-            transformLidarToLidar[3] = static_cast<double>(icp_quaternion.x());
-            transformLidarToLidar[4] = static_cast<double>(icp_quaternion.y());
-            transformLidarToLidar[5] = static_cast<double>(icp_quaternion.z());
-            transformLidarToLidar[6] = static_cast<double>(icp_quaternion.w());
-        }
-        else
-        {
-            ROS_WARN("ICP score exceeds threshold, calibration failed.");
-            // return;
-        }
-        updateParam(); // Update dynamic reconfigure parameters
-
-    }
-
-    void updateParam()
-    {
-        lidar_to_lidar_calibration::TestConfig config;
-        config.calib_x = transformLidarToLidar[0];
-        config.calib_y = transformLidarToLidar[1];
-        config.calib_z = transformLidarToLidar[2];
-        Eigen::Quaterniond quaternion_result(transformLidarToLidar[6], transformLidarToLidar[3], transformLidarToLidar[4], transformLidarToLidar[5]);
-        Eigen::Vector3d euler_result = quaternion_result.toRotationMatrix().eulerAngles(2, 1, 0); // Yaw, Pitch, Roll
-        config.calib_yaw = euler_result[0] * 180.0 / M_PI; // Convert to degrees
-        config.calib_pitch = euler_result[1] * 180.0 / M_PI; // Convert to degrees
-        config.calib_roll = euler_result[2] * 180.0 / M_PI; // Convert to degrees
-        trigger_calculation = false; // Reset the trigger for next calculation
-        config.trigger_calculation = false; // Reset the trigger for next calculation
-        config.icp_score_threshold = icp_score_threshold;
-
-        config.add_x = 0.0;
-        config.add_y = 0.0;
-        config.add_z = 0.0;
-        config.add_roll = 0.0;
-        config.add_pitch = 0.0;
-        config.add_yaw = 0.0;
-
-        config.box_A_lx = box_A_lx;
-        config.box_A_ly = box_A_ly;
-        config.box_A_lz = box_A_lz;
-        config.box_A_x = box_A_x;
-        config.box_A_y = box_A_y;
-        config.box_A_z = box_A_z;
-        config.box_A_roll = box_A_roll;
-        config.box_A_pitch = box_A_pitch;
-        config.box_A_yaw = box_A_yaw;
-
-        config.box_B_lx = box_B_lx;
-        config.box_B_ly = box_B_ly;
-        config.box_B_lz = box_B_lz;
-        config.box_B_x = box_B_x;
-        config.box_B_y = box_B_y;
-        config.box_B_z = box_B_z;
-        config.box_B_roll = box_B_roll;
-        config.box_B_pitch = box_B_pitch;
-        config.box_B_yaw = box_B_yaw;
-        config.board_l = board_l;
-        update_pose = false;
-        server.updateConfig(config); // Update dynamic reconfigure parameters
-        ROS_INFO("Dynamic reconfigure parameters updated.");
-
-    }
-
+    // 计算两个点的欧式距离
     double computeEuclideanDistance(const PointType &point1, const PointType &point2)
     {
         return std::sqrt(
@@ -645,6 +523,7 @@ public:
             std::pow(point1.z - point2.z, 2));
     }
 
+    // 计算两组点云之间的RMSE
     double computeRMSE(const PointCloudPtr &cloud1,
                        const PointCloudPtr &cloud2)
     {
@@ -657,6 +536,7 @@ public:
         return std::sqrt(sum_squared_error / cloud1->size());
     }
 
+    // 数组转为变换矩阵4f
     Eigen::Matrix4f convertToEigenMatrix4f(const double trans[7])
     {
         Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
@@ -668,6 +548,7 @@ public:
         return mat.cast<float>();
     }
 
+    // 转为变换矩阵，输入平移和四元数
     Eigen::Matrix4f convertToEigenMatrix4f(Eigen::Vector3d translation, Eigen::Quaterniond quaternion)
     {
         Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
@@ -677,6 +558,7 @@ public:
         return mat.cast<float>();
     }
 
+    // 计算增量变换
     void add_pose()
     {
         double add_trans[7];
@@ -702,6 +584,8 @@ public:
         transformLidarToLidar[6] = new_matrix.getRotation().w();
         
     }
+
+    // 计算刚体变换
     void estimateRigidTransformationAndPublish(
         const PointCloudPtr &matched_scan_cloud,
         const PointCloudPtr &matched_map_cloud)
@@ -716,22 +600,45 @@ public:
         pcl::transformPointCloud(*matched_scan_cloud, *transformed_scan_cloud, transformation_matrix);
         double transformed_rmse = computeRMSE(transformed_scan_cloud, matched_map_cloud);
         std::cout << "Transformed RMSE: " << transformed_rmse << std::endl;
-        if (transformed_rmse > 2.0)
+        if (transformed_rmse > svd_threshold)
         {
             std::cout<<"Transformation does not meet threshold!"<<std::endl;
             return;
         }
-        Eigen::Matrix3d Rtrans = transformation_matrix.block<3, 3>(0, 0).cast<double>();
+        std::cout << std::fixed << std::setprecision(9);
+        std::cout << std::string(20, '=') << std::endl;
+        Eigen::Matrix4f transformation_matrix_inv = transformation_matrix.inverse();
+        Eigen::Matrix3d Rtrans = transformation_matrix_inv.block<3, 3>(0, 0).cast<double>();
         Eigen::Quaterniond q_trans(Rtrans);
-        Eigen::Vector3d t_trans = transformation_matrix.block<3, 1>(0, 3).cast<double>();
-        std::cout << "q = " << std::endl;
-        std::cout << q_trans.x() << " " << q_trans.y() << " " << q_trans.z() << " " << q_trans.w() << std::endl;
-        std::cout << "t = " << std::endl;
-        std::cout << t_trans[0] << " " << t_trans[1] << " " << t_trans[2] << std::endl;
+        Eigen::Vector3d t_trans = transformation_matrix_inv.block<3, 1>(0, 3).cast<double>();
+        std::cout << "Transformation results source->target = "<<std::endl;
+        std::cout << "        t = [";
+        std::cout << t_trans[0] << ", " << t_trans[1] << ", " << t_trans[2] << "]"<< std::endl;
+        std::cout << "        q = [";
+        std::cout << q_trans.x() << ", " << q_trans.y() << ", " << q_trans.z() << ", " << q_trans.w()<< "]" << std::endl;
+        std::cout << std::string(20, '-') << std::endl;
+
+        Eigen::Matrix3d Rtrans2 = transformation_matrix.block<3, 3>(0, 0).cast<double>();
+        Eigen::Quaterniond q_trans2(Rtrans2);
+        Eigen::Vector3d t_trans2 = transformation_matrix.block<3, 1>(0, 3).cast<double>();
+        std::cout << "Transformation results target->source = "<<std::endl;
+        std::cout << "        t = [";
+        std::cout << t_trans2[0] << ", " << t_trans2[1] << ", " << t_trans2[2] << "]"<< std::endl;
+        std::cout << "        q = [";
+        std::cout << q_trans2.x() << ", " << q_trans2.y() << ", " << q_trans2.z() << ", " << q_trans2.w()<< "]" << std::endl;
+        std::cout << std::string(20, '=') << std::endl;
+        
+
+        transformLidarToLidar[0] = t_trans[0];
+        transformLidarToLidar[1] = t_trans[1];
+        transformLidarToLidar[2] = t_trans[2];
+        transformLidarToLidar[3] = q_trans.x();
+        transformLidarToLidar[4] = q_trans.y();
+        transformLidarToLidar[5] = q_trans.z();
+        transformLidarToLidar[6] = q_trans.w();
     }
 
-
-
+    // 点云融合函数
     PointCloudPtr mergePointClouds(const deque<PointCloudPtr>& queue)
     {
         PointCloudPtr merged_cloud(new PointCloud);
@@ -742,6 +649,7 @@ public:
         return merged_cloud;
     }
 
+    // 重载点云融合函数
     PointXYZIRTCloudPtr mergePointClouds(const deque<PointXYZIRTCloudPtr>& queue)
     {
         PointXYZIRTCloudPtr merged_cloud(new PointXYZIRTCloud);
@@ -752,61 +660,55 @@ public:
         return merged_cloud;
     }
 
-    void dynamicReconfigureCallback(lidar_to_lidar_calibration::TestConfig &config, uint32_t level)
+    // Eigen 欧拉角(角度值)转四元数
+    Eigen::Quaterniond eulor_deg_to_q(double roll_deg, double pitch_deg, double yaw_deg)
     {
-        // Update calibration parameters from dynamic reconfigure
-        calib_x = config.calib_x;
-        calib_y = config.calib_y;
-        calib_z = config.calib_z;
-        calib_roll = config.calib_roll;
-        calib_pitch = config.calib_pitch;
-        calib_yaw = config.calib_yaw;
-        trigger_calculation = config.trigger_calculation;
-        add_x = config.add_x;
-        add_y = config.add_y;
-        add_z = config.add_z;
-        add_roll = config.add_roll;
-        add_pitch = config.add_pitch;
-        add_yaw = config.add_yaw;
-        icp_score_threshold = config.icp_score_threshold;
-        box_A_lx = config.box_A_lx;
-        box_A_ly = config.box_A_ly;
-        box_A_lz = config.box_A_lz;
-        box_A_x = config.box_A_x;
-        box_A_y = config.box_A_y;
-        box_A_z = config.box_A_z;
-        box_A_roll = config.box_A_roll;
-        box_A_pitch = config.box_A_pitch;
-        box_A_yaw = config.box_A_yaw;
-
-        box_B_lx = config.box_B_lx;
-        box_B_ly = config.box_B_ly;
-        box_B_lz = config.box_B_lz;
-        box_B_x = config.box_B_x;
-        box_B_y = config.box_B_y;
-        box_B_z = config.box_B_z;
-        box_B_roll = config.box_B_roll;
-        box_B_pitch = config.box_B_pitch;
-        box_B_yaw = config.box_B_yaw;
-        board_l = config.board_l;
-
-        update_transformLidarToLidar();
-        if(add_x != 0.0 || add_y != 0.0 || add_z != 0.0 ||
-           add_roll != 0.0 || add_pitch != 0.0 || add_yaw != 0.0)
-        {
-            add_pose();
-            update_pose = true;
-        }
-        ROS_INFO("Dynamic reconfigure parameters updated: "
-                 "calib_x = %f, calib_y = %f, calib_z = %f, "
-                 "calib_roll = %f, calib_pitch = %f, calib_yaw = %f"
-                 "add_x = %f, add_y = %f, add_z = %f, "
-                 "add_roll = %f, add_pitch = %f, add_yaw = %f, ",
-                 calib_x, calib_y, calib_z,
-                 calib_roll, calib_pitch, calib_yaw,
-                 add_x, add_y, add_z,
-                 add_roll, add_pitch, add_yaw);
+        double roll = roll_deg * M_PI / 180.0;
+        double pitch = pitch_deg * M_PI / 180.0;
+        double yaw = yaw_deg * M_PI / 180.0;
+        Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
+        q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
+            * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
+            * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+        return q;
     }
+
+    // 发布flag
+    void publishflag(const int& this_seq)
+    {
+        std_msgs::Header header_msg;
+        header_msg.stamp = ros::Time::now();
+        header_msg.frame_id = "feedback_number";
+        header_msg.seq = this_seq;
+
+        feedback_flag_pub.publish(header_msg);
+    }
+
+    // 发布点云的函数
+    void publishPointCloudMsg(const ros::Publisher& publisher,
+                            const std_msgs::Header& header,
+                            const PointCloudPtr output_cloud)
+    {
+        sensor_msgs::PointCloud2 output_msg;
+        pcl::toROSMsg(*output_cloud, output_msg);
+        output_msg.header = header;
+        output_msg.header.stamp = ros::Time::now();
+        publisher.publish(output_msg);
+    }
+
+    // 重载发布点云的函数
+    void publishPointCloudMsg(const ros::Publisher& publisher,
+                            const std_msgs::Header& header,
+                            const PointXYZIRTCloudPtr output_cloud)
+    {
+        sensor_msgs::PointCloud2 output_msg;
+        pcl::toROSMsg(*output_cloud, output_msg);
+        output_msg.header = header;
+        output_msg.header.stamp = ros::Time::now();
+        publisher.publish(output_msg);
+    }
+
+    // 箱体发布函数
     void publishCubeMarker(ros::Publisher& marker_pub,string frame_id,
         double lx, double ly, double lz, double x, double y, double z,
         double roll, double pitch, double yaw, const std::vector<double> &rgb)
@@ -861,6 +763,107 @@ public:
 
     }
 
+    // 更新param参数
+    void updateParam()
+    {
+        lidar_to_lidar_calibration::TestConfig config;
+        config.calib_x = transformLidarToLidar[0];
+        config.calib_y = transformLidarToLidar[1];
+        config.calib_z = transformLidarToLidar[2];
+        Eigen::Quaterniond quaternion_result(transformLidarToLidar[6], transformLidarToLidar[3], transformLidarToLidar[4], transformLidarToLidar[5]);
+        Eigen::Vector3d euler_result = quaternion_result.toRotationMatrix().eulerAngles(2, 1, 0); // Yaw, Pitch, Roll
+        config.calib_yaw = euler_result[0] * 180.0 / M_PI; // Convert to degrees
+        config.calib_pitch = euler_result[1] * 180.0 / M_PI; // Convert to degrees
+        config.calib_roll = euler_result[2] * 180.0 / M_PI; // Convert to degrees
+        trigger_calculation = false; // Reset the trigger for next calculation
+        config.trigger_calculation = false; // Reset the trigger for next calculation
+        config.icp_score_threshold = icp_score_threshold;
+        config.svd_threshold = svd_threshold;
+
+        config.add_x = 0.0;
+        config.add_y = 0.0;
+        config.add_z = 0.0;
+        config.add_roll = 0.0;
+        config.add_pitch = 0.0;
+        config.add_yaw = 0.0;
+
+        config.box_A_lx = box_A_lx;
+        config.box_A_ly = box_A_ly;
+        config.box_A_lz = box_A_lz;
+        config.box_A_x = box_A_x;
+        config.box_A_y = box_A_y;
+        config.box_A_z = box_A_z;
+        config.box_A_roll = box_A_roll;
+        config.box_A_pitch = box_A_pitch;
+        config.box_A_yaw = box_A_yaw;
+
+        config.box_B_lx = box_B_lx;
+        config.box_B_ly = box_B_ly;
+        config.box_B_lz = box_B_lz;
+        config.box_B_x = box_B_x;
+        config.box_B_y = box_B_y;
+        config.box_B_z = box_B_z;
+        config.box_B_roll = box_B_roll;
+        config.box_B_pitch = box_B_pitch;
+        config.box_B_yaw = box_B_yaw;
+        config.board_l = board_l;
+        update_pose = false;
+        server.updateConfig(config); // Update dynamic reconfigure parameters
+        ROS_INFO("Dynamic reconfigure parameters updated.");
+
+    }
+
+    // 动参回调函数
+    void dynamicReconfigureCallback(lidar_to_lidar_calibration::TestConfig &config, uint32_t level)
+    {
+        // Update calibration parameters from dynamic reconfigure
+        calib_x = config.calib_x;
+        calib_y = config.calib_y;
+        calib_z = config.calib_z;
+        calib_roll = config.calib_roll;
+        calib_pitch = config.calib_pitch;
+        calib_yaw = config.calib_yaw;
+        trigger_calculation = config.trigger_calculation;
+        add_x = config.add_x;
+        add_y = config.add_y;
+        add_z = config.add_z;
+        add_roll = config.add_roll;
+        add_pitch = config.add_pitch;
+        add_yaw = config.add_yaw;
+        icp_score_threshold = config.icp_score_threshold;
+        svd_threshold = config.svd_threshold;
+        box_A_lx = config.box_A_lx;
+        box_A_ly = config.box_A_ly;
+        box_A_lz = config.box_A_lz;
+        box_A_x = config.box_A_x;
+        box_A_y = config.box_A_y;
+        box_A_z = config.box_A_z;
+        box_A_roll = config.box_A_roll;
+        box_A_pitch = config.box_A_pitch;
+        box_A_yaw = config.box_A_yaw;
+
+        box_B_lx = config.box_B_lx;
+        box_B_ly = config.box_B_ly;
+        box_B_lz = config.box_B_lz;
+        box_B_x = config.box_B_x;
+        box_B_y = config.box_B_y;
+        box_B_z = config.box_B_z;
+        box_B_roll = config.box_B_roll;
+        box_B_pitch = config.box_B_pitch;
+        box_B_yaw = config.box_B_yaw;
+        board_l = config.board_l;
+
+        update_transformLidarToLidar();
+        if(add_x != 0.0 || add_y != 0.0 || add_z != 0.0 ||
+           add_roll != 0.0 || add_pitch != 0.0 || add_yaw != 0.0)
+        {
+            add_pose();
+            update_pose = true;
+        }
+        ROS_INFO("Dynamic reconfigure parameters updated!");
+    }
+
+    // 独立线程，发布 tf
     void publishTF()
     {
         ros::Rate rate(10); // Publish at 10 Hz
@@ -897,7 +900,10 @@ public:
                 calib_result_pub.publish(poseStamped);
 
                 // Publish the transformation
-                tf_broadcaster.sendTransform(transformStamped);
+                if (tf_publish)
+                {
+                    tf_broadcaster.sendTransform(transformStamped);
+                }
                 vector<double> marker_A_rgb = {1.0, 0.0, 0.0};
                 
                 publishCubeMarker(pub_mark_A, source_frame, box_A_lx, box_A_ly, box_A_lz, box_A_x, box_A_y, box_A_z, box_A_roll, box_A_pitch, box_A_yaw, marker_A_rgb);
@@ -913,15 +919,12 @@ public:
             if (trigger_calculation)
             {
                 ROS_INFO("Triggering calibration calculation.");
-                Computer_calib();
+                // Computer_calib();
             }
             rate.sleep();
         }
     }
 };
-
-
-
 
 int main (int argc, char **argv)
 {
