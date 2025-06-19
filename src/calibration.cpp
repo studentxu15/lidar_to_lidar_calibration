@@ -16,7 +16,7 @@ public:
     ros::Publisher pub_mark_A;
     ros::Publisher pub_mark_B;
     ros::Publisher boundary_pub;
-    ros::Publisher boundary_pub_A;
+    ros::Publisher centrol;
     ros::Publisher mesh_pub;
 
     deque<PointCloudPtr> source_lidar_queue; // Queue for source LiDAR point clouds
@@ -60,10 +60,11 @@ public:
         initialpose_sub = nh.subscribe(initial_topic, 10, &LidarCalibration::initialPoseCallback, this);
         header_sub = nh.subscribe(flag_topic, 10, &LidarCalibration::FlagCallback, this);
 
-        merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>(merged_cloud_topic, 10);
+        // merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>(merged_cloud_topic, 10);
+        merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/merge_cloud", 10);
         target_cloud_repub = nh.advertise<sensor_msgs::PointCloud2>(target_lidar_topic + "/filter", 10);
         boundary_pub = nh.advertise<sensor_msgs::PointCloud2>(target_lidar_topic + "_mesh", 10);
-        boundary_pub_A = nh.advertise<sensor_msgs::PointCloud2>(source_lidar_topic + "_mesh", 10);
+        center_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/center", 10);
         mesh_pub = nh.advertise<sensor_msgs::PointCloud2>(target_lidar_topic + "_edge", 10);
         calib_result_pub = nh.advertise<geometry_msgs::PoseStamped>(calibration_result_topic, 10);
         pub_mark_A = nh.advertise<visualization_msgs::Marker>(marker_A_topic, 10);
@@ -93,15 +94,13 @@ public:
         tf_broadcaster = tf2_ros::TransformBroadcaster(); // Initialize the TF broadcaster
     }
 
-    void eulor_to_q()
+    // 更新transformLidarToLidar
+    void update_transformLidarToLidar()
     {
         double roll = calib_roll * M_PI / 180.0;
         double pitch = calib_pitch * M_PI / 180.0;
         double yaw = calib_yaw * M_PI / 180.0;
         Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
-        // q = Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX())
-        //     * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
-        //     * Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ());
         q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
             * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
             * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
@@ -114,6 +113,7 @@ public:
         transformLidarToLidar[6] = q.w();
     }
 
+    // Eigen 欧拉角(角度值)转四元数
     Eigen::Quaterniond eulor_deg_to_q(double roll_deg, double pitch_deg, double yaw_deg)
     {
         double roll = roll_deg * M_PI / 180.0;
@@ -124,20 +124,45 @@ public:
             * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
             * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
         return q;
+    }
 
+    // 发布点云的函数
+    void publishPointCloudMsg(const ros::Publish& publisher,
+                            const std_msgs::Header& header,
+                            const PointCloudPtr output_cloud)
+    {
+        sensor_msgs::PointCloud2 output_msg;
+        pcl::toROSMsg(*output_cloud, output_msg);
+        output_msg.header = header;
+        output_msg.header.stamp = ros::Time::now();
+        publisher.publish(output_msg);
+    }
+
+    // 重载发布点云的函数
+    void publishPointCloudMsg(const ros::Publish& publisher,
+                            const std_msgs::Header& header,
+                            const PointXYZIRTCloudPtr output_cloud)
+    {
+        sensor_msgs::PointCloud2 output_msg;
+        pcl::toROSMsg(*output_cloud, output_msg);
+        output_msg.header = header;
+        output_msg.header.stamp = ros::Time::now();
+        publisher.publish(output_msg);
     }
 
     void sourceLidarCallback(const sensor_msgs::PointCloud2ConstPtr& msg)
     {
+        source_frame = msg->header.frame_id;
         PointCloudPtr cloud(new PointCloud);
-        pcl::fromROSMsg(*msg, *cloud);
+        pcl::fromROSMsg(*msg, *cloud); // msg转PointCloudPtr
         source_raw_cloud = cloud;
+
+        // 箱体滤波，保留 箱体内的点云为 cloud_filtered
+        PointCloudPtr cloud_filtered(new PointCloud);
         Eigen::Vector3d translation(box_A_x, box_A_y, box_A_z);
         Eigen::Quaterniond quaternion = eulor_deg_to_q(box_A_roll, box_A_pitch, box_A_yaw);
         Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
         Eigen::Matrix4f T_inv = T.inverse();
-
-        PointCloudPtr cloud_filtered(new PointCloud);
         for (const auto& pt : cloud->points)
         {
             Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
@@ -149,37 +174,25 @@ public:
                 cloud_filtered->points.push_back(pt);
             }
         }
-        source_frame = msg->header.frame_id;
+
+        // 将点云添加到队列中，并融合点云为 source_merge_cloud
         source_lidar_queue.push_back(cloud_filtered);
         if (source_lidar_queue.size() > source_lidar_queue_size)
         {
             source_lidar_queue.pop_front();
         }
         source_merge_cloud = mergePointClouds(source_lidar_queue);
-        sensor_msgs::PointCloud2 merged_msg;
-        pcl::toROSMsg(*source_merge_cloud, merged_msg);
-        merged_msg.header = msg->header;
-        merged_cloud_pub.publish(merged_msg);
 
-        //
+        // 发布融合后的点云
+        // sensor_msgs::PointCloud2 merged_msg;
+        // pcl::toROSMsg(*source_merge_cloud, merged_msg);
+        // merged_msg.header = msg->header;
+        // merged_msg.header.stamp = ros::Time::now();
+        // merged_cloud_pub.publish(merged_msg);
+        publishPointCloudMsg(merged_cloud_pub, msg->header, source_merge_cloud);
+
+        // 将点云进行过滤后提取中心点，并发布出去 plan_cloud
         PointCloudPtr plan_cloud(new PointCloud);
-        // float step = 0.01f;
-        // float dis_l = board_l;
-        // for (float y = box_A_y - dis_l / 2; y <= box_A_y + dis_l / 2; y += step)
-        // {
-        //     for (float z = box_A_z - dis_l / 2; z <= box_A_z + dis_l / 2; z += step)
-        //     {
-        //         PointType pt;
-        //         pt.x = box_A_x;
-        //         pt.y = y;
-        //         pt.z = z;
-        //         pt.intensity = 255.0f;
-        //         plan_cloud->points.push_back(pt);
-        //     }
-        // }
-        
-
-
         if (!source_merge_cloud->empty())
         {
             pcl::VoxelGrid<PointType> voxel_filter;
@@ -188,7 +201,6 @@ public:
             PointCloudPtr filtered_cloud(new PointCloud);
             voxel_filter.filter(*filtered_cloud);
 
-            //
             float sum_x = 0.0f;
             float sum_y = 0.0f;
             float sum_z = 0.0f;
@@ -204,15 +216,13 @@ public:
             centroid_source.z = sum_z / num_points;
             centroid_source.intensity = 10.0f;
             plan_cloud->points.push_back(centroid_source);
-
         }
 
         sensor_msgs::PointCloud2 output_msg;
-        
         pcl::toROSMsg(*plan_cloud, output_msg);
         output_msg.header = msg->header;
         output_msg.header.stamp = ros::Time::now();
-        boundary_pub_A.publish(output_msg);
+        center_A_pub.publish(output_msg);
 
 
     }
@@ -780,7 +790,7 @@ public:
         box_B_yaw = config.box_B_yaw;
         board_l = config.board_l;
 
-        eulor_to_q(); // Convert Euler angles to quaternion
+        update_transformLidarToLidar();
         if(add_x != 0.0 || add_y != 0.0 || add_z != 0.0 ||
            add_roll != 0.0 || add_pitch != 0.0 || add_yaw != 0.0)
         {

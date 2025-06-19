@@ -3,6 +3,7 @@ project(lidar_to_lidar_calibration)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  rospy
   sensor_msgs
   std_msgs
   geometry_msgs
@@ -23,6 +24,11 @@ catkin_package(
   LIBRARIES ${PROJECT_NAME}
   CATKIN_DEPENDS roscpp sensor_msgs std_msgs geometry_msgs tf2_ros pcl_conversions dynamic_reconfigure
 )
+
+# catkin_install_python(PROGRAMS
+#   scripts/calib_sync.py
+#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
 
 include_directories(
     include
@@ -49,9 +55,3 @@ install(DIRECTORY include/${PROJECT_NAME}/
 install(DIRECTORY launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
-catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES ${PROJECT_NAME}
-  CATKIN_DEPENDS roscpp sensor_msgs std_msgs geometry_msgs tf2_ros pcl_conversions
-)
-
