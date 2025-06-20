@@ -34,6 +34,9 @@ class CalibrationGUI:
         self.btn_frame3 = tk.Button(master, text="计算外参", command=lambda: self.send_calibration_flag("calibration_computer"))
         self.btn_frame3.pack(pady=5, ipadx=20, ipady=10)
 
+        self.btn_frame4 = tk.Button(master, text="自主寻找", command=lambda: self.send_calibration_flag("auto_find_center"))
+        self.btn_frame4.pack(pady=5, ipadx=20, ipady=10)
+
         # 新增输入框和按钮
         self.erase_frame = tk.Frame(master)
         self.erase_frame.pack(pady=15)

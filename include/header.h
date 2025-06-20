@@ -22,6 +22,9 @@
 #include <pcl/registration/ndt.h>
 #include <pcl/registration/icp.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/segmentation/extract_clusters.h>
+#include <pcl/common/centroid.h>
 
 #include <dynamic_reconfigure/server.h>
 
@@ -77,10 +80,12 @@ public:
 
     double calib_x, calib_y, calib_z;
     double calib_roll, calib_pitch, calib_yaw;
+    double ndt_initial_roll, ndt_initial_pitch, ndt_initial_yaw;
 
     double box_A_lx, box_A_ly, box_A_lz, box_A_x, box_A_y, box_A_z, box_A_roll, box_A_pitch, box_A_yaw;
     double box_B_lx, box_B_ly, box_B_lz, box_B_x, box_B_y, box_B_z, box_B_roll, box_B_pitch, box_B_yaw;
     double board_l;
+    double MaxCorrespondenceDistance;
 
     bool tf_publish;
 
@@ -116,6 +121,10 @@ public:
         private_nh.param<double>("box_A_qy", box_A_pitch, 0.0);
         private_nh.param<double>("box_A_qz", box_A_yaw, 0.0);
 
+        private_nh.param<double>("ndt_initial_roll", ndt_initial_roll, 0.0);
+        private_nh.param<double>("ndt_initial_pitch", ndt_initial_pitch, 0.0);
+        private_nh.param<double>("ndt_initial_yaw", ndt_initial_yaw, 0.0);
+
         private_nh.param<double>("box_B_lx", box_B_lx, 0.0);
         private_nh.param<double>("box_B_ly", box_B_ly, 0.0);
         private_nh.param<double>("box_B_lz", box_B_lz, 0.0);
@@ -125,6 +134,8 @@ public:
         private_nh.param<double>("box_B_qx", box_B_roll, 0.0);
         private_nh.param<double>("box_B_qy", box_B_pitch, 0.0);
         private_nh.param<double>("box_B_qz", box_B_yaw, 0.0);
+
+        private_nh.param<double>("MaxCorrespondenceDistance", MaxCorrespondenceDistance, 0.1);
 
         private_nh.param<bool>("tf_publish", tf_publish, false);
     }

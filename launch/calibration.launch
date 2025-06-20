@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
 <launch>
-    <arg name="calibration_rviz" default="0" />
+    <arg name="calibration_rviz" default="1" />
     <arg name="calibration_open_lidar_sdk" default="0" />
 
     <node pkg="lidar_to_lidar_calibration" type="lidar_to_lidar_calibration" name="calibration_test" output="screen">
         <rosparam subst_value="true">
-            source_lidar_topic: "/mid360_front_t"
+            source_lidar_topic: "/mid360_front_s"
             target_lidar_topic: "/velodyne_points"
             initial_topic: "initialpose"
             flag_topic: "calibration_flag"
@@ -63,7 +63,7 @@
 
         <node pkg="livox_repub" type="livox_repub_online_node" name="livox_repub_online_front" output="screen" respawn="true" >
             <param name="livox_raw_message_name"    type="string"   value="/mid360_front" />
-            <param name="livox_points_message_name"    type="string"   value="/mid360_front_s" />
+            <param name="livox_points_message_name"    type="string"   value="/mid360_front_t" />
             <param name="livox_frame"    type="string"   value="mid360_frame" />
         </node>
     </group>

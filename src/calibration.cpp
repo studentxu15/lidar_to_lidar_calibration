@@ -4,11 +4,10 @@
 class LidarCalibration : public ParamServer
 {
 public:
-
     ros::Subscriber source_lidar_sub; // Subscriber for source LiDAR data
     ros::Subscriber target_lidar_sub; // Subscriber for target camera data
-    ros::Subscriber initialpose_sub; // Subscriber for initial transformation data
-    ros::Subscriber header_sub; // Subscriber for initial pose data
+    ros::Subscriber initialpose_sub;  // Subscriber for initial transformation data
+    ros::Subscriber header_sub;       // Subscriber for initial pose data
 
     ros::Publisher merged_cloud_pub; // Publisher for merged point cloud
     ros::Publisher target_filtered_pub;
@@ -16,16 +15,17 @@ public:
     ros::Publisher pub_mark_A;
     ros::Publisher pub_mark_B;
     ros::Publisher boundary_pub;
+    ros::Publisher boundary_raw_pub;
     ros::Publisher center_A_pub;
     ros::Publisher all_centroid_A_pub;
     ros::Publisher all_centroid_B_pub;
     ros::Publisher edge_pub;
     ros::Publisher feedback_flag_pub;
 
-    deque<PointCloudPtr> source_lidar_queue; // Queue for source LiDAR point clouds
+    deque<PointCloudPtr> source_lidar_queue;       // Queue for source LiDAR point clouds
     deque<PointXYZIRTCloudPtr> target_lidar_queue; // Queue for source LiDAR point clouds
-    PointCloudPtr source_merge_cloud; // Merged point cloud for source LiDAR
-    PointXYZIRTCloudPtr target_current_cloud; // Current point cloud for target camera
+    PointCloudPtr source_merge_cloud;              // Merged point cloud for source LiDAR
+    PointXYZIRTCloudPtr target_current_cloud;      // Current point cloud for target camera
 
     PointCloudPtr source_raw_cloud;
     PointXYZIRTCloudPtr target_raw_cloud;
@@ -42,6 +42,8 @@ public:
     double transformLidarToLidar[7];
     bool trigger_calculation = false;
     bool update_pose = false;
+    bool auto_find_center_source = false;
+    bool auto_find_center_target = false;
     double add_x = 0.0;
     double add_y = 0.0;
     double add_z = 0.0;
@@ -65,6 +67,7 @@ public:
         merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/filtered", 10);
         target_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/filtered", 10);
         boundary_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/boundary_cloud", 10);
+        boundary_raw_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/boundary_raw_cloud", 10);
         center_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_lidar_topic + "/center", 10);
         edge_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_lidar_topic + "/edge_cloud", 10);
         all_centroid_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration" + source_lidar_topic + "/all_centroid", 10);
@@ -105,9 +108,7 @@ public:
         double pitch = calib_pitch * M_PI / 180.0;
         double yaw = calib_yaw * M_PI / 180.0;
         Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
-        q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
-            * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
-            * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+        q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()) * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
         transformLidarToLidar[0] = calib_x;
         transformLidarToLidar[1] = calib_y;
         transformLidarToLidar[2] = calib_z;
@@ -117,12 +118,76 @@ public:
         transformLidarToLidar[6] = q.w();
     }
 
-    void sourceLidarCallback(const sensor_msgs::PointCloud2ConstPtr& msg)
+    void sourceLidarCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
     {
         source_frame = msg->header.frame_id;
         PointCloudPtr cloud(new PointCloud);
         pcl::fromROSMsg(*msg, *cloud); // msg转PointCloudPtr
         source_raw_cloud = cloud;
+        if (auto_find_center_source)
+        {
+            PointCloudPtr cloud2(new PointCloud);
+            pcl::fromROSMsg(*msg, *cloud2);
+            pcl::PointIndices::Ptr intensity_filtered_indices(new pcl::PointIndices);
+            for (size_t i = 0; i < cloud2->points.size(); ++i)
+            {
+                if (cloud2->points[i].intensity > 150)
+                {
+                    intensity_filtered_indices->indices.push_back(i);
+                    if (!intensity_filtered_indices->indices.empty())
+                    {
+                        PointCloudPtr intensity_filtered_cloud(new PointCloud);
+                        pcl::ExtractIndices<PointType> extract;
+                        extract.setInputCloud(cloud2);
+                        extract.setIndices(intensity_filtered_indices);
+                        extract.setNegative(false);
+                        extract.filter(*intensity_filtered_cloud);
+
+                        // 4. 聚类参数设置
+                        std::vector<pcl::PointIndices> cluster_indices;
+                        pcl::EuclideanClusterExtraction<PointType> ec;
+                        ec.setClusterTolerance(0.5);  // 设置聚类距离阈值，单位米，根据实际场景调整
+                        ec.setMinClusterSize(5);     // 聚类点数阈值，根据需要调整
+                        ec.setMaxClusterSize(10000);
+                        ec.setInputCloud(intensity_filtered_cloud);
+                        ec.extract(cluster_indices);
+
+                        if (!cluster_indices.empty())
+                        {
+                            size_t max_cluster_idx = 0;
+                            size_t max_points = 0;
+                            for (size_t i = 0; i < cluster_indices.size(); ++i)
+                            {
+                                if (cluster_indices[i].indices.size() > max_points)
+                                {
+                                    max_points = cluster_indices[i].indices.size();
+                                    max_cluster_idx = i;
+                                }
+                            }
+
+                            // 6. 提取最大聚类簇点云
+                            pcl::PointIndices::Ptr largest_cluster_indices(new pcl::PointIndices(cluster_indices[max_cluster_idx]));
+                            PointCloudPtr largest_cluster_cloud(new PointCloud);
+                            extract.setInputCloud(intensity_filtered_cloud);
+                            extract.setIndices(largest_cluster_indices);
+                            extract.filter(*largest_cluster_cloud);
+
+                            // 7. 计算质心
+                            Eigen::Vector4f centroid;
+                            pcl::compute3DCentroid(*largest_cluster_cloud, centroid);
+                            box_A_x = centroid[0];
+                            box_A_y = centroid[1];
+                            box_A_z = centroid[2];
+
+                            
+                        }
+                    }
+                }
+                    
+            }
+            updateParam();
+            auto_find_center_source = false;
+        }
 
         // 箱体滤波，保留 箱体内的点云为 cloud_filtered
         PointCloudPtr cloud_filtered(new PointCloud);
@@ -130,13 +195,13 @@ public:
         Eigen::Quaterniond quaternion = eulor_deg_to_q(box_A_roll, box_A_pitch, box_A_yaw);
         Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
         Eigen::Matrix4f T_inv = T.inverse();
-        for (const auto& pt : cloud->points)
+        for (const auto &pt : cloud->points)
         {
             Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
             Eigen::Vector4f p_cube = T_inv * p_sensor;
-            if ( fabs(p_cube.x()) <= box_A_lx/2.0f &&
-                 fabs(p_cube.y()) <= box_A_ly/2.0f &&
-                 fabs(p_cube.z()) <= box_A_lz/2.0f )
+            if (fabs(p_cube.x()) <= box_A_lx / 2.0f &&
+                fabs(p_cube.y()) <= box_A_ly / 2.0f &&
+                fabs(p_cube.z()) <= box_A_lz / 2.0f)
             {
                 cloud_filtered->points.push_back(pt);
             }
@@ -166,7 +231,7 @@ public:
             float sum_x = 0.0f;
             float sum_y = 0.0f;
             float sum_z = 0.0f;
-            for (const auto& pt : filtered_cloud->points)
+            for (const auto &pt : filtered_cloud->points)
             {
                 sum_x += pt.x;
                 sum_y += pt.y;
@@ -186,15 +251,81 @@ public:
         {
             publishPointCloudMsg(all_centroid_A_pub, msg->header, source_center_cloud);
         }
-            
+
+        vector<double> marker_A_rgb = {1.0, 0.0, 0.0};
+        publishCubeMarker(pub_mark_A, source_frame, box_A_lx, box_A_ly, box_A_lz, box_A_x, box_A_y, box_A_z, box_A_roll, box_A_pitch, box_A_yaw, marker_A_rgb);
     }
 
-    void targetLidarCallback(const sensor_msgs::PointCloud2ConstPtr& msg)
+    void targetLidarCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
     {
         target_frame = msg->header.frame_id;
         PointXYZIRTCloudPtr cloud(new PointXYZIRTCloud);
         pcl::fromROSMsg(*msg, *cloud);
         target_raw_cloud = cloud;
+        if (auto_find_center_target)
+        {
+            PointCloudPtr cloud2(new PointCloud);
+            pcl::fromROSMsg(*msg, *cloud2);
+            pcl::PointIndices::Ptr intensity_filtered_indices(new pcl::PointIndices);
+            for (size_t i = 0; i < cloud2->points.size(); ++i)
+            {
+                if (cloud2->points[i].intensity > 150)
+                {
+                    intensity_filtered_indices->indices.push_back(i);
+                    if (!intensity_filtered_indices->indices.empty())
+                    {
+                        PointCloudPtr intensity_filtered_cloud(new PointCloud);
+                        pcl::ExtractIndices<PointType> extract;
+                        extract.setInputCloud(cloud2);
+                        extract.setIndices(intensity_filtered_indices);
+                        extract.setNegative(false);
+                        extract.filter(*intensity_filtered_cloud);
+
+                        // 4. 聚类参数设置
+                        std::vector<pcl::PointIndices> cluster_indices;
+                        pcl::EuclideanClusterExtraction<PointType> ec;
+                        ec.setClusterTolerance(0.5);  // 设置聚类距离阈值，单位米，根据实际场景调整
+                        ec.setMinClusterSize(5);     // 聚类点数阈值，根据需要调整
+                        ec.setMaxClusterSize(10000);
+                        ec.setInputCloud(intensity_filtered_cloud);
+                        ec.extract(cluster_indices);
+
+                        if (!cluster_indices.empty())
+                        {
+                            size_t max_cluster_idx = 0;
+                            size_t max_points = 0;
+                            for (size_t i = 0; i < cluster_indices.size(); ++i)
+                            {
+                                if (cluster_indices[i].indices.size() > max_points)
+                                {
+                                    max_points = cluster_indices[i].indices.size();
+                                    max_cluster_idx = i;
+                                }
+                            }
+
+                            // 6. 提取最大聚类簇点云
+                            pcl::PointIndices::Ptr largest_cluster_indices(new pcl::PointIndices(cluster_indices[max_cluster_idx]));
+                            PointCloudPtr largest_cluster_cloud(new PointCloud);
+                            extract.setInputCloud(intensity_filtered_cloud);
+                            extract.setIndices(largest_cluster_indices);
+                            extract.filter(*largest_cluster_cloud);
+
+                            // 7. 计算质心
+                            Eigen::Vector4f centroid;
+                            pcl::compute3DCentroid(*largest_cluster_cloud, centroid);
+                            box_B_x = centroid[0];
+                            box_B_y = centroid[1];
+                            box_B_z = centroid[2];
+
+                            
+                        }
+                    }
+                }
+                    
+            }
+            updateParam();
+            auto_find_center_target = false;
+        }
 
         // 将点云添加到队列中，并融合点云为 target_merge_cloud
         target_lidar_queue.push_back(target_raw_cloud);
@@ -203,7 +334,6 @@ public:
             target_lidar_queue.pop_front();
         }
         PointXYZIRTCloudPtr target_merge_cloud = mergePointClouds(target_lidar_queue);
-        
 
         // 箱体滤波，保留 箱体内的点云为 target_current_cloud
         target_current_cloud->points.clear();
@@ -212,13 +342,13 @@ public:
         Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
         Eigen::Matrix4f T_inv = T.inverse();
         target_current_cloud->points.clear();
-        for (const auto& pt : target_merge_cloud->points)
+        for (const auto &pt : target_merge_cloud->points)
         {
             Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
             Eigen::Vector4f p_cube = T_inv * p_sensor;
-            if ( fabs(p_cube.x()) <= box_B_lx/2.0f &&
-                 fabs(p_cube.y()) <= box_B_ly/2.0f &&
-                 fabs(p_cube.z()) <= box_B_lz/2.0f )
+            if (fabs(p_cube.x()) <= box_B_lx / 2.0f &&
+                fabs(p_cube.y()) <= box_B_ly / 2.0f &&
+                fabs(p_cube.z()) <= box_B_lz / 2.0f)
             {
                 target_current_cloud->points.push_back(pt);
             }
@@ -226,7 +356,7 @@ public:
 
         // 将每一条线的左右端点保存到 ring_boundary_points
         std::map<uint16_t, std::pair<PointXYZIRT, PointXYZIRT>> ring_boundary_points;
-        for (const auto& point : target_current_cloud->points)
+        for (const auto &point : target_current_cloud->points)
         {
             uint16_t ring = point.ring;
             if (ring_boundary_points.find(ring) == ring_boundary_points.end())
@@ -235,8 +365,8 @@ public:
             }
             else
             {
-                auto& left_point = ring_boundary_points[ring].first;
-                auto& right_point = ring_boundary_points[ring].second;
+                auto &left_point = ring_boundary_points[ring].first;
+                auto &right_point = ring_boundary_points[ring].second;
                 // 通过角度值找边界
                 float left_angle = std::atan2(left_point.y, left_point.x);
                 float right_angle = std::atan2(right_point.y, right_point.x);
@@ -255,7 +385,7 @@ public:
         }
 
         std::vector<uint16_t> rings;
-        for (const auto& kv : ring_boundary_points)
+        for (const auto &kv : ring_boundary_points)
         {
             rings.push_back(kv.first);
         }
@@ -268,8 +398,8 @@ public:
         for (size_t i = 0; i < rings.size(); ++i)
         {
             uint16_t ring = rings[i];
-            auto& left_point = ring_boundary_points[ring].first;
-            auto& right_point = ring_boundary_points[ring].second;
+            auto &left_point = ring_boundary_points[ring].first;
+            auto &right_point = ring_boundary_points[ring].second;
             edge_cloud->points.push_back(convertVelodyneToXYZI(left_point));
             edge_cloud->points.push_back(convertVelodyneToXYZI(right_point));
             float dx = (left_point.x + right_point.x) / 2;
@@ -281,11 +411,12 @@ public:
         }
         prev_x /= rings.size();
         prev_y /= rings.size();
-        prev_z /= rings.size();
+        // prev_z /= rings.size();
+        prev_z = box_B_z;
 
         // 生成四边形，保存到点云group中
         float dis_l = board_l / std::sqrt(2);
-        float step = 0.002f;  // 0.5cm
+        float step = 0.01f; // 0.5cm
         float point_start = 0.0f;
         float point_end = dis_l;
         PointCloudPtr group(new PointCloud);
@@ -317,29 +448,51 @@ public:
             group->points.push_back(pt3);
             group->points.push_back(pt4);
         }
+        //
+        PointCloudPtr ks_cloud1(new PointCloud);
+        PointCloudPtr ks_cloud2(new PointCloud);
+        PointCloudPtr transformed_group2(new PointCloud);
+        Eigen::Vector3d trans1(-prev_x, -prev_y, -prev_z);
+        Eigen::Quaterniond quate1 = eulor_deg_to_q(0.0, 0.0, 0.0);
+        Eigen::Matrix4f mat1 = convertToEigenMatrix4f(trans1, quate1);
+        pcl::transformPointCloud(*group, *ks_cloud1, mat1);
+
+        Eigen::Vector3d trans2(0, 0, 0);
+        Eigen::Quaterniond quate2 = eulor_deg_to_q(ndt_initial_roll, ndt_initial_pitch, ndt_initial_yaw);
+        Eigen::Matrix4f mat2 = convertToEigenMatrix4f(trans2, quate2);
+        pcl::transformPointCloud(*ks_cloud1, *ks_cloud2, mat2);
+
+        Eigen::Vector3d trans3(prev_x, prev_y, prev_z);
+        Eigen::Quaterniond quate3 = eulor_deg_to_q(0.0, 0.0, 0.0);
+        Eigen::Matrix4f mat3 = convertToEigenMatrix4f(trans3, quate3);
+
+        pcl::transformPointCloud(*ks_cloud2, *transformed_group2, mat3);
+
+        publishPointCloudMsg(boundary_raw_pub, msg->header, transformed_group2);
 
         // 生成的四边形与边界点进行ndt+icp配准
         if (!edge_cloud->empty() && !group->empty())
         {
+
             pcl::NormalDistributionsTransform<PointType, PointType> ndt;
             ndt.setTransformationEpsilon(0.01);
             ndt.setResolution(0.1f);
             ndt.setMaximumIterations(50);
             ndt.setInputSource(edge_cloud);
-            ndt.setInputTarget(group);
+            ndt.setInputTarget(transformed_group2);
             Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
             PointCloudPtr aligned_cloud(new PointCloud);
             ndt.align(*aligned_cloud, initial_guess);
 
             // icp配准
             pcl::IterativeClosestPoint<PointType, PointType> icp;
-            icp.setMaximumIterations(100);  // 迭代次数
-            icp.setMaxCorrespondenceDistance(0.2); // 最大对应点距离
-            icp.setTransformationEpsilon(1e-6);   // 收敛阈值
-            icp.setEuclideanFitnessEpsilon(1e-6); // 欧氏距离阈值
-            icp.setRANSACIterations(false);  // 不使用RANSAC
+            icp.setMaximumIterations(200);         // 迭代次数
+            icp.setMaxCorrespondenceDistance(MaxCorrespondenceDistance); // 最大对应点距离
+            icp.setTransformationEpsilon(1e-6);    // 收敛阈值
+            icp.setEuclideanFitnessEpsilon(1e-6);  // 欧氏距离阈值
+            icp.setRANSACIterations(1000);        // 不使用RANSAC
             icp.setInputSource(edge_cloud);
-            icp.setInputTarget(group);
+            icp.setInputTarget(transformed_group2);
             PointCloudPtr icp_aligned_cloud(new PointCloud);
             icp.align(*icp_aligned_cloud, ndt.getFinalTransformation());
             // printf("ICP score: %f\n", icp.getFitnessScore());
@@ -347,7 +500,7 @@ public:
             if (icp.getFitnessScore() <= 0.001)
             {
                 PointCloudPtr transformed_group(new PointCloud);
-                pcl::transformPointCloud(*group, *transformed_group, final_transformation);
+                pcl::transformPointCloud(*transformed_group2, *transformed_group, final_transformation);
                 *group = *transformed_group;
             }
             else
@@ -360,7 +513,7 @@ public:
             float sum_x = 0.0f;
             float sum_y = 0.0f;
             float sum_z = 0.0f;
-            for (const auto& pt : group->points)
+            for (const auto &pt : group->points)
             {
                 sum_x += pt.x;
                 sum_y += pt.y;
@@ -387,10 +540,12 @@ public:
         {
             publishPointCloudMsg(all_centroid_B_pub, msg->header, target_center_cloud);
         }
+        vector<double> marker_B_rgb = {0.0, 1.0, 0.0};
+        publishCubeMarker(pub_mark_B, target_frame, box_B_lx, box_B_ly, box_B_lz, box_B_x, box_B_y, box_B_z, box_B_roll, box_B_pitch, box_B_yaw, marker_B_rgb);
     }
 
     // 给定初始位姿(废弃)
-    void initialPoseCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr& msg)
+    void initialPoseCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr &msg)
     {
         // Extract the transformation from the initial pose message
         transformLidarToLidar[0] = msg->pose.pose.position.x;
@@ -406,7 +561,7 @@ public:
     }
 
     // Flag订阅
-    void FlagCallback(const std_msgs::HeaderConstPtr& msg)
+    void FlagCallback(const std_msgs::HeaderConstPtr &msg)
     {
         if (msg->frame_id == "calibration_start") // 清空中心点
         {
@@ -417,66 +572,66 @@ public:
         }
         else if (msg->frame_id == "calibration_record_points") // 记录中心点
         {
-            // source_center_cloud->points.push_back(centroid_source);
-            // target_center_cloud->points.push_back(centroid_target);
+            source_center_cloud->points.push_back(centroid_source);
+            target_center_cloud->points.push_back(centroid_target);
             // printf("Number of recorded points: %ld\n", target_center_cloud->points.size());
-            
+
             // //  test
-            PointType pt1a,pt1b,pt2a,pt2b,pt3a,pt3b,pt4a,pt4b,pt5a,pt5b;
-            pt1a.x = 1.1;
-            pt1a.y = 2.7;
-            pt1a.z = 5.9;
-            pt1a.intensity = 10.0;
-            pt1b.x = -1.96905;
-            pt1b.y = 3.0694702;
-            pt1b.z = 4.32063;
-            pt1b.intensity = 200.0;
-            source_center_cloud->points.push_back(pt1a);
-            target_center_cloud->points.push_back(pt1b);
+            // PointType pt1a, pt1b, pt2a, pt2b, pt3a, pt3b, pt4a, pt4b, pt5a, pt5b;
+            // pt1a.x = 1.1;
+            // pt1a.y = 2.7;
+            // pt1a.z = 5.9;
+            // pt1a.intensity = 10.0;
+            // pt1b.x = -1.96905;
+            // pt1b.y = 3.0694702;
+            // pt1b.z = 4.32063;
+            // pt1b.intensity = 200.0;
+            // source_center_cloud->points.push_back(pt1a);
+            // target_center_cloud->points.push_back(pt1b);
 
-            pt2a.x = 3.4;
-            pt2a.y = 1.0;
-            pt2a.z = 0.2;
-            pt2a.intensity = 10.0;
-            pt2b.x = 2.9981243;
-            pt2b.y = 0.48969842;
-            pt2b.z = 1.26417786;
-            pt2b.intensity = 200.0;
-            source_center_cloud->points.push_back(pt2a);
-            target_center_cloud->points.push_back(pt2b);
+            // pt2a.x = 3.4;
+            // pt2a.y = 1.0;
+            // pt2a.z = 0.2;
+            // pt2a.intensity = 10.0;
+            // pt2b.x = 2.9981243;
+            // pt2b.y = 0.48969842;
+            // pt2b.z = 1.26417786;
+            // pt2b.intensity = 200.0;
+            // source_center_cloud->points.push_back(pt2a);
+            // target_center_cloud->points.push_back(pt2b);
 
-            pt3a.x = 7.9;
-            pt3a.y = 3.8;
-            pt3a.z = 2.1;
-            pt3a.intensity = 10.0;
-            pt3b.x = 5.8514683;
-            pt3b.y = 3.625053;
-            pt3b.z = 4.9693063;
-            pt3b.intensity = 200.0;
-            source_center_cloud->points.push_back(pt3a);
-            target_center_cloud->points.push_back(pt3b);
+            // pt3a.x = 7.9;
+            // pt3a.y = 3.8;
+            // pt3a.z = 2.1;
+            // pt3a.intensity = 10.0;
+            // pt3b.x = 5.8514683;
+            // pt3b.y = 3.625053;
+            // pt3b.z = 4.9693063;
+            // pt3b.intensity = 200.0;
+            // source_center_cloud->points.push_back(pt3a);
+            // target_center_cloud->points.push_back(pt3b);
 
-            pt4a.x = 4.3;
-            pt4a.y = 6.7;
-            pt4a.z = 9.3;
-            pt4a.intensity = 10.0;
-            pt4b.x = -0.93137337;
-            pt4b.y = 7.6165165;
-            pt4b.z = 8.326579;
-            pt4b.intensity = 200.0;
-            source_center_cloud->points.push_back(pt4a);
-            target_center_cloud->points.push_back(pt4b);
+            // pt4a.x = 4.3;
+            // pt4a.y = 6.7;
+            // pt4a.z = 9.3;
+            // pt4a.intensity = 10.0;
+            // pt4b.x = -0.93137337;
+            // pt4b.y = 7.6165165;
+            // pt4b.z = 8.326579;
+            // pt4b.intensity = 200.0;
+            // source_center_cloud->points.push_back(pt4a);
+            // target_center_cloud->points.push_back(pt4b);
 
-            pt5a.x = 0.4;
-            pt5a.y = 5.6;
-            pt5a.z = 3.2;
-            pt5a.intensity = 10.0;
-            pt5b.x = -0.780418226;
-            pt5b.y = 5.4775840;
-            pt5b.z = 1.324280886;
-            pt5b.intensity = 200.0;
-            source_center_cloud->points.push_back(pt5a);
-            target_center_cloud->points.push_back(pt5b);
+            // pt5a.x = 0.4;
+            // pt5a.y = 5.6;
+            // pt5a.z = 3.2;
+            // pt5a.intensity = 10.0;
+            // pt5b.x = -0.780418226;
+            // pt5b.y = 5.4775840;
+            // pt5b.z = 1.324280886;
+            // pt5b.intensity = 200.0;
+            // source_center_cloud->points.push_back(pt5a);
+            // target_center_cloud->points.push_back(pt5b);
             int cloud_num = source_center_cloud->points.size();
             publishflag(cloud_num);
         }
@@ -501,10 +656,15 @@ public:
                 publishflag(cloud_num);
             }
         }
+        else if (msg->frame_id == "auto_find_center")
+        {
+            auto_find_center_source = true;
+            auto_find_center_target = true;
+        }
     }
 
     // XYZIRT点云转XYZI
-    PointType convertVelodyneToXYZI(const PointXYZIRT& pt)
+    PointType convertVelodyneToXYZI(const PointXYZIRT &pt)
     {
         PointType p;
         p.x = pt.x;
@@ -540,8 +700,8 @@ public:
     Eigen::Matrix4f convertToEigenMatrix4f(const double trans[7])
     {
         Eigen::Matrix4d mat = Eigen::Matrix4d::Identity();
-        Eigen::Vector3d translation(trans[0],trans[1],trans[2]);
-        Eigen::Quaterniond quaternion(trans[6],trans[3],trans[4],trans[5]);
+        Eigen::Vector3d translation(trans[0], trans[1], trans[2]);
+        Eigen::Quaterniond quaternion(trans[6], trans[3], trans[4], trans[5]);
         Eigen::Matrix3d rotation = quaternion.toRotationMatrix();
         mat.block<3, 3>(0, 0) = rotation;
         mat.block<3, 1>(0, 3) = translation;
@@ -568,11 +728,11 @@ public:
         tf2::Quaternion q;
         q.setRPY(roll, pitch, yaw);
         tf2::Transform add_mat;
-        add_mat.setOrigin(tf2::Vector3(add_x,add_y,add_z));
+        add_mat.setOrigin(tf2::Vector3(add_x, add_y, add_z));
         add_mat.setRotation(q);
         tf2::Transform current_mat;
-        current_mat.setOrigin(tf2::Vector3(transformLidarToLidar[0],transformLidarToLidar[1],transformLidarToLidar[2]));
-        current_mat.setRotation(tf2::Quaternion(transformLidarToLidar[3],transformLidarToLidar[4],transformLidarToLidar[5],transformLidarToLidar[6]));
+        current_mat.setOrigin(tf2::Vector3(transformLidarToLidar[0], transformLidarToLidar[1], transformLidarToLidar[2]));
+        current_mat.setRotation(tf2::Quaternion(transformLidarToLidar[3], transformLidarToLidar[4], transformLidarToLidar[5], transformLidarToLidar[6]));
         tf2::Transform new_matrix = current_mat * add_mat;
 
         transformLidarToLidar[0] = new_matrix.getOrigin().x();
@@ -582,7 +742,6 @@ public:
         transformLidarToLidar[4] = new_matrix.getRotation().y();
         transformLidarToLidar[5] = new_matrix.getRotation().z();
         transformLidarToLidar[6] = new_matrix.getRotation().w();
-        
     }
 
     // 计算刚体变换
@@ -602,7 +761,7 @@ public:
         std::cout << "Transformed RMSE: " << transformed_rmse << std::endl;
         if (transformed_rmse > svd_threshold)
         {
-            std::cout<<"Transformation does not meet threshold!"<<std::endl;
+            std::cout << "Transformation does not meet threshold!" << std::endl;
             return;
         }
         std::cout << std::fixed << std::setprecision(9);
@@ -611,23 +770,22 @@ public:
         Eigen::Matrix3d Rtrans = transformation_matrix_inv.block<3, 3>(0, 0).cast<double>();
         Eigen::Quaterniond q_trans(Rtrans);
         Eigen::Vector3d t_trans = transformation_matrix_inv.block<3, 1>(0, 3).cast<double>();
-        std::cout << "Transformation results source->target = "<<std::endl;
+        std::cout << "Transformation results source->target = " << std::endl;
         std::cout << "        t = [";
-        std::cout << t_trans[0] << ", " << t_trans[1] << ", " << t_trans[2] << "]"<< std::endl;
+        std::cout << t_trans[0] << ", " << t_trans[1] << ", " << t_trans[2] << "]" << std::endl;
         std::cout << "        q = [";
-        std::cout << q_trans.x() << ", " << q_trans.y() << ", " << q_trans.z() << ", " << q_trans.w()<< "]" << std::endl;
+        std::cout << q_trans.x() << ", " << q_trans.y() << ", " << q_trans.z() << ", " << q_trans.w() << "]" << std::endl;
         std::cout << std::string(20, '-') << std::endl;
 
         Eigen::Matrix3d Rtrans2 = transformation_matrix.block<3, 3>(0, 0).cast<double>();
         Eigen::Quaterniond q_trans2(Rtrans2);
         Eigen::Vector3d t_trans2 = transformation_matrix.block<3, 1>(0, 3).cast<double>();
-        std::cout << "Transformation results target->source = "<<std::endl;
+        std::cout << "Transformation results target->source = " << std::endl;
         std::cout << "        t = [";
-        std::cout << t_trans2[0] << ", " << t_trans2[1] << ", " << t_trans2[2] << "]"<< std::endl;
+        std::cout << t_trans2[0] << ", " << t_trans2[1] << ", " << t_trans2[2] << "]" << std::endl;
         std::cout << "        q = [";
-        std::cout << q_trans2.x() << ", " << q_trans2.y() << ", " << q_trans2.z() << ", " << q_trans2.w()<< "]" << std::endl;
+        std::cout << q_trans2.x() << ", " << q_trans2.y() << ", " << q_trans2.z() << ", " << q_trans2.w() << "]" << std::endl;
         std::cout << std::string(20, '=') << std::endl;
-        
 
         transformLidarToLidar[0] = t_trans[0];
         transformLidarToLidar[1] = t_trans[1];
@@ -639,10 +797,10 @@ public:
     }
 
     // 点云融合函数
-    PointCloudPtr mergePointClouds(const deque<PointCloudPtr>& queue)
+    PointCloudPtr mergePointClouds(const deque<PointCloudPtr> &queue)
     {
         PointCloudPtr merged_cloud(new PointCloud);
-        for (const auto& cloud : queue)
+        for (const auto &cloud : queue)
         {
             *merged_cloud += *cloud; // Merge point clouds
         }
@@ -650,10 +808,10 @@ public:
     }
 
     // 重载点云融合函数
-    PointXYZIRTCloudPtr mergePointClouds(const deque<PointXYZIRTCloudPtr>& queue)
+    PointXYZIRTCloudPtr mergePointClouds(const deque<PointXYZIRTCloudPtr> &queue)
     {
         PointXYZIRTCloudPtr merged_cloud(new PointXYZIRTCloud);
-        for (const auto& cloud : queue)
+        for (const auto &cloud : queue)
         {
             *merged_cloud += *cloud; // Merge point clouds
         }
@@ -667,14 +825,12 @@ public:
         double pitch = pitch_deg * M_PI / 180.0;
         double yaw = yaw_deg * M_PI / 180.0;
         Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
-        q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
-            * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
-            * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+        q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ()) * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
         return q;
     }
 
     // 发布flag
-    void publishflag(const int& this_seq)
+    void publishflag(const int &this_seq)
     {
         std_msgs::Header header_msg;
         header_msg.stamp = ros::Time::now();
@@ -685,9 +841,9 @@ public:
     }
 
     // 发布点云的函数
-    void publishPointCloudMsg(const ros::Publisher& publisher,
-                            const std_msgs::Header& header,
-                            const PointCloudPtr output_cloud)
+    void publishPointCloudMsg(const ros::Publisher &publisher,
+                              const std_msgs::Header &header,
+                              const PointCloudPtr output_cloud)
     {
         sensor_msgs::PointCloud2 output_msg;
         pcl::toROSMsg(*output_cloud, output_msg);
@@ -697,9 +853,9 @@ public:
     }
 
     // 重载发布点云的函数
-    void publishPointCloudMsg(const ros::Publisher& publisher,
-                            const std_msgs::Header& header,
-                            const PointXYZIRTCloudPtr output_cloud)
+    void publishPointCloudMsg(const ros::Publisher &publisher,
+                              const std_msgs::Header &header,
+                              const PointXYZIRTCloudPtr output_cloud)
     {
         sensor_msgs::PointCloud2 output_msg;
         pcl::toROSMsg(*output_cloud, output_msg);
@@ -709,9 +865,9 @@ public:
     }
 
     // 箱体发布函数
-    void publishCubeMarker(ros::Publisher& marker_pub,string frame_id,
-        double lx, double ly, double lz, double x, double y, double z,
-        double roll, double pitch, double yaw, const std::vector<double> &rgb)
+    void publishCubeMarker(ros::Publisher &marker_pub, string frame_id,
+                           double lx, double ly, double lz, double x, double y, double z,
+                           double roll, double pitch, double yaw, const std::vector<double> &rgb)
     {
         visualization_msgs::Marker marker;
         marker.header.frame_id = frame_id;
@@ -726,15 +882,14 @@ public:
         marker.color.b = rgb[2];
         marker.color.a = 1.0;
         std::vector<Eigen::Vector3f> points_local = {
-            {float(lx/2), float(ly/2), float(lz/2)},
-            {float(-lx/2), float(ly/2), float(lz/2)},
-            {float(-lx/2), float(-ly/2), float(lz/2)},
-            {float(lx/2), float(-ly/2), float(lz/2)},
-            {float(lx/2), float(ly/2), float(-lz/2)},
-            {float(-lx/2), float(ly/2), float(-lz/2)},
-            {float(-lx/2), float(-ly/2), float(-lz/2)},
-            {float(lx/2), float(-ly/2), float(-lz/2)}
-        };
+            {float(lx / 2), float(ly / 2), float(lz / 2)},
+            {float(-lx / 2), float(ly / 2), float(lz / 2)},
+            {float(-lx / 2), float(-ly / 2), float(lz / 2)},
+            {float(lx / 2), float(-ly / 2), float(lz / 2)},
+            {float(lx / 2), float(ly / 2), float(-lz / 2)},
+            {float(-lx / 2), float(ly / 2), float(-lz / 2)},
+            {float(-lx / 2), float(-ly / 2), float(-lz / 2)},
+            {float(lx / 2), float(-ly / 2), float(-lz / 2)}};
         Eigen::Vector3d translation(x, y, z);
         Eigen::Quaterniond quaternion = eulor_deg_to_q(roll, pitch, yaw);
         Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
@@ -750,9 +905,9 @@ public:
             vertices_world[i] = pt;
         }
         int edge_indices[24] = {
-            0,1, 1,2, 2,3, 3,0,   // 前面4条边
-            4,5, 5,6, 6,7, 7,4,   // 后面4条边
-            0,4, 1,5, 2,6, 3,7    // 连接前后4条边
+            0, 1, 1, 2, 2, 3, 3, 0, // 前面4条边
+            4, 5, 5, 6, 6, 7, 7, 4, // 后面4条边
+            0, 4, 1, 5, 2, 6, 3, 7  // 连接前后4条边
         };
         for (int i = 0; i < 24; i += 2)
         {
@@ -760,7 +915,6 @@ public:
             marker.points.push_back(vertices_world[edge_indices[i + 1]]);
         }
         marker_pub.publish(marker);
-
     }
 
     // 更新param参数
@@ -772,11 +926,11 @@ public:
         config.calib_z = transformLidarToLidar[2];
         Eigen::Quaterniond quaternion_result(transformLidarToLidar[6], transformLidarToLidar[3], transformLidarToLidar[4], transformLidarToLidar[5]);
         Eigen::Vector3d euler_result = quaternion_result.toRotationMatrix().eulerAngles(2, 1, 0); // Yaw, Pitch, Roll
-        config.calib_yaw = euler_result[0] * 180.0 / M_PI; // Convert to degrees
-        config.calib_pitch = euler_result[1] * 180.0 / M_PI; // Convert to degrees
-        config.calib_roll = euler_result[2] * 180.0 / M_PI; // Convert to degrees
-        trigger_calculation = false; // Reset the trigger for next calculation
-        config.trigger_calculation = false; // Reset the trigger for next calculation
+        config.calib_yaw = euler_result[0] * 180.0 / M_PI;                                        // Convert to degrees
+        config.calib_pitch = euler_result[1] * 180.0 / M_PI;                                      // Convert to degrees
+        config.calib_roll = euler_result[2] * 180.0 / M_PI;                                       // Convert to degrees
+        trigger_calculation = false;                                                              // Reset the trigger for next calculation
+        config.trigger_calculation = false;                                                       // Reset the trigger for next calculation
         config.icp_score_threshold = icp_score_threshold;
         config.svd_threshold = svd_threshold;
 
@@ -796,6 +950,10 @@ public:
         config.box_A_roll = box_A_roll;
         config.box_A_pitch = box_A_pitch;
         config.box_A_yaw = box_A_yaw;
+        config.ndt_initial_roll = ndt_initial_roll;
+        config.ndt_initial_pitch = ndt_initial_pitch;
+        config.ndt_initial_yaw = ndt_initial_yaw;
+        config.MaxCorrespondenceDistance = MaxCorrespondenceDistance;
 
         config.box_B_lx = box_B_lx;
         config.box_B_ly = box_B_ly;
@@ -810,7 +968,6 @@ public:
         update_pose = false;
         server.updateConfig(config); // Update dynamic reconfigure parameters
         ROS_INFO("Dynamic reconfigure parameters updated.");
-
     }
 
     // 动参回调函数
@@ -851,11 +1008,15 @@ public:
         box_B_roll = config.box_B_roll;
         box_B_pitch = config.box_B_pitch;
         box_B_yaw = config.box_B_yaw;
+        ndt_initial_roll = config.ndt_initial_roll;
+        ndt_initial_pitch = config.ndt_initial_pitch;
+        ndt_initial_yaw = config.ndt_initial_yaw;
         board_l = config.board_l;
+        MaxCorrespondenceDistance = config.MaxCorrespondenceDistance;
 
         update_transformLidarToLidar();
-        if(add_x != 0.0 || add_y != 0.0 || add_z != 0.0 ||
-           add_roll != 0.0 || add_pitch != 0.0 || add_yaw != 0.0)
+        if (add_x != 0.0 || add_y != 0.0 || add_z != 0.0 ||
+            add_roll != 0.0 || add_pitch != 0.0 || add_yaw != 0.0)
         {
             add_pose();
             update_pose = true;
@@ -886,7 +1047,6 @@ public:
                 transformStamped.transform.rotation.z = transformLidarToLidar[5];
                 transformStamped.transform.rotation.w = transformLidarToLidar[6];
 
-
                 geometry_msgs::PoseStamped poseStamped;
                 poseStamped.header = transformStamped.header;
                 poseStamped.pose.position.x = transformLidarToLidar[0];
@@ -904,11 +1064,11 @@ public:
                 {
                     tf_broadcaster.sendTransform(transformStamped);
                 }
-                vector<double> marker_A_rgb = {1.0, 0.0, 0.0};
-                
-                publishCubeMarker(pub_mark_A, source_frame, box_A_lx, box_A_ly, box_A_lz, box_A_x, box_A_y, box_A_z, box_A_roll, box_A_pitch, box_A_yaw, marker_A_rgb);
-                vector<double> marker_B_rgb = {0.0, 1.0, 0.0};
-                publishCubeMarker(pub_mark_B, target_frame, box_B_lx, box_B_ly, box_B_lz, box_B_x, box_B_y, box_B_z, box_B_roll, box_B_pitch, box_B_yaw, marker_B_rgb);
+                // vector<double> marker_A_rgb = {1.0, 0.0, 0.0};
+
+                // publishCubeMarker(pub_mark_A, source_frame, box_A_lx, box_A_ly, box_A_lz, box_A_x, box_A_y, box_A_z, box_A_roll, box_A_pitch, box_A_yaw, marker_A_rgb);
+                // vector<double> marker_B_rgb = {0.0, 1.0, 0.0};
+                // publishCubeMarker(pub_mark_B, target_frame, box_B_lx, box_B_ly, box_B_lz, box_B_x, box_B_y, box_B_z, box_B_roll, box_B_pitch, box_B_yaw, marker_B_rgb);
             }
             if (update_pose)
             {
@@ -926,7 +1086,7 @@ public:
     }
 };
 
-int main (int argc, char **argv)
+int main(int argc, char **argv)
 {
     ros::init(argc, argv, "calibration_node");
 
