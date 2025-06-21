@@ -449,8 +449,8 @@ public:
                 left_inter = 60;
                 right_inter = 120;
             }
-            edge_cloud->points.push_back(convertVelodyneToXYZI(left_point), left_inter);
-            edge_cloud->points.push_back(convertVelodyneToXYZI(right_point), right_inter);
+            edge_cloud->points.push_back(convertVelodyneToXYZI(left_point, left_inter));
+            edge_cloud->points.push_back(convertVelodyneToXYZI(right_point, right_inter));
         }
         // 计算中心点坐标
         float prev_x = 0.0f;
@@ -478,7 +478,7 @@ public:
             centroid_target.y = prev_y;
             centroid_target.z = prev_z;
             centroid_target.intensity = 10.0f;
-            group->points.push_back(centroid_target)
+            group->points.push_back(centroid_target);
         }
         else
         {
@@ -817,11 +817,11 @@ public:
     {
         // 提取直线1的参数 (p1, d1)
         Eigen::Vector3f p1 = line1_coeffs.head<3>();
-        Eigen::Vector3f d1 = line1_coeffs.tail<3>();
+        Eigen::Vector3f d1 = line1_coeffs.tail<3>().normalized();
 
         // 提取直线2的参数 (p2, d2)
         Eigen::Vector3f p2 = line2_coeffs.head<3>();
-        Eigen::Vector3f d2 = line2_coeffs.tail<3>();
+        Eigen::Vector3f d2 = line2_coeffs.tail<3>().normalized();
 
         // 计算叉积 n = d1 × d2
         Eigen::Vector3f n = d1.cross(d2);
@@ -876,17 +876,19 @@ public:
         Eigen::VectorXf coeffs2;
         ransac2.getModelCoefficients(coeffs2);
 
-        // 尝试计算交点
-        PointType intersection;
-        if (pcl::lineWithLineIntersection(coeffs1, coeffs2, intersection))
-        {
-            return intersection; // 如果相交，返回交点
-        }
-        else
-        {
-            // 如果不相交，计算最近点的中点
-            return computeClosestPointsMidpoint(coeffs1, coeffs2);
-        }
+        return computeClosestPointsMidpoint(coeffs1, coeffs2);
+
+        // // 尝试计算交点
+        // PointType intersection;
+        // if (pcl::lineToLineSegment(coeffs1, coeffs2, intersection))
+        // {
+        //     return intersection; // 如果相交，返回交点
+        // }
+        // else
+        // {
+        //     // 如果不相交，计算最近点的中点
+        //     return computeClosestPointsMidpoint(coeffs1, coeffs2);
+        // }
     }
 
     // 计算两组点云之间的RMSE
