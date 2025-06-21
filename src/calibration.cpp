@@ -146,7 +146,7 @@ public:
                         // 4. 聚类参数设置
                         std::vector<pcl::PointIndices> cluster_indices;
                         pcl::EuclideanClusterExtraction<PointType> ec;
-                        ec.setClusterTolerance(0.5);  // 设置聚类距离阈值，单位米，根据实际场景调整
+                        ec.setClusterTolerance(0.5); // 设置聚类距离阈值，单位米，根据实际场景调整
                         ec.setMinClusterSize(5);     // 聚类点数阈值，根据需要调整
                         ec.setMaxClusterSize(10000);
                         ec.setInputCloud(intensity_filtered_cloud);
@@ -178,12 +178,9 @@ public:
                             box_A_x = centroid[0];
                             box_A_y = centroid[1];
                             box_A_z = centroid[2];
-
-                            
                         }
                     }
                 }
-                    
             }
             updateParam();
             auto_find_center_source = false;
@@ -284,7 +281,7 @@ public:
                         // 4. 聚类参数设置
                         std::vector<pcl::PointIndices> cluster_indices;
                         pcl::EuclideanClusterExtraction<PointType> ec;
-                        ec.setClusterTolerance(0.5);  // 设置聚类距离阈值，单位米，根据实际场景调整
+                        ec.setClusterTolerance(0.5); // 设置聚类距离阈值，单位米，根据实际场景调整
                         ec.setMinClusterSize(5);     // 聚类点数阈值，根据需要调整
                         ec.setMaxClusterSize(10000);
                         ec.setInputCloud(intensity_filtered_cloud);
@@ -316,12 +313,9 @@ public:
                             box_B_x = centroid[0];
                             box_B_y = centroid[1];
                             box_B_z = centroid[2];
-
-                            
                         }
                     }
                 }
-                    
             }
             updateParam();
             auto_find_center_target = false;
@@ -391,141 +385,240 @@ public:
         }
         std::sort(rings.begin(), rings.end());
         PointCloudPtr edge_cloud(new PointCloud); // 边界点
-        // 计算中心点坐标
-        float prev_x = 0.0f;
-        float prev_y = 0.0f;
-        float prev_z = 0.0f;
+
+        // add -----------------------------
+        PointCloudPtr group1(new PointCloud);
+        PointCloudPtr group2(new PointCloud);
+        PointCloudPtr group3(new PointCloud);
+        PointCloudPtr group4(new PointCloud);
+        double dis_point12 = 0.0;
+        double last_point_dis = 0.0;
+        bool start_lower_point = false;
         for (size_t i = 0; i < rings.size(); ++i)
         {
             uint16_t ring = rings[i];
             auto &left_point = ring_boundary_points[ring].first;
             auto &right_point = ring_boundary_points[ring].second;
-            edge_cloud->points.push_back(convertVelodyneToXYZI(left_point));
-            edge_cloud->points.push_back(convertVelodyneToXYZI(right_point));
-            float dx = (left_point.x + right_point.x) / 2;
-            float dy = (left_point.y + right_point.y) / 2;
-            float dz = (left_point.z + right_point.z) / 2;
-            prev_x += dx;
-            prev_y += dy;
-            prev_z += dz;
-        }
-        prev_x /= rings.size();
-        prev_y /= rings.size();
-        // prev_z /= rings.size();
-        prev_z = box_B_z;
-
-        // 生成四边形，保存到点云group中
-        float dis_l = board_l / std::sqrt(2);
-        float step = 0.01f; // 0.5cm
-        float point_start = 0.0f;
-        float point_end = dis_l;
-        PointCloudPtr group(new PointCloud);
-        for (float y = point_start; y <= point_end; y += step)
-        {
-            PointType pt1, pt2, pt3, pt4;
-            pt1.x = prev_x;
-            pt2.x = prev_x;
-            pt3.x = prev_x;
-            pt4.x = prev_x;
-
-            pt1.y = y + prev_y - dis_l;
-            pt2.y = y + prev_y;
-            pt3.y = prev_y + dis_l - y;
-            pt4.y = prev_y - y;
-
-            pt1.z = prev_z + y;
-            pt2.z = prev_z + dis_l - y;
-            pt3.z = prev_z - y;
-            pt4.z = prev_z - dis_l + y;
-
-            pt1.intensity = 255.0f;
-            pt2.intensity = 255.0f;
-            pt3.intensity = 255.0f;
-            pt4.intensity = 255.0f;
-
-            group->points.push_back(pt1);
-            group->points.push_back(pt2);
-            group->points.push_back(pt3);
-            group->points.push_back(pt4);
-        }
-        //
-        PointCloudPtr ks_cloud1(new PointCloud);
-        PointCloudPtr ks_cloud2(new PointCloud);
-        PointCloudPtr transformed_group2(new PointCloud);
-        Eigen::Vector3d trans1(-prev_x, -prev_y, -prev_z);
-        Eigen::Quaterniond quate1 = eulor_deg_to_q(0.0, 0.0, 0.0);
-        Eigen::Matrix4f mat1 = convertToEigenMatrix4f(trans1, quate1);
-        pcl::transformPointCloud(*group, *ks_cloud1, mat1);
-
-        Eigen::Vector3d trans2(0, 0, 0);
-        Eigen::Quaterniond quate2 = eulor_deg_to_q(ndt_initial_roll, ndt_initial_pitch, ndt_initial_yaw);
-        Eigen::Matrix4f mat2 = convertToEigenMatrix4f(trans2, quate2);
-        pcl::transformPointCloud(*ks_cloud1, *ks_cloud2, mat2);
-
-        Eigen::Vector3d trans3(prev_x, prev_y, prev_z);
-        Eigen::Quaterniond quate3 = eulor_deg_to_q(0.0, 0.0, 0.0);
-        Eigen::Matrix4f mat3 = convertToEigenMatrix4f(trans3, quate3);
-
-        pcl::transformPointCloud(*ks_cloud2, *transformed_group2, mat3);
-
-        publishPointCloudMsg(boundary_raw_pub, msg->header, transformed_group2);
-
-        // 生成的四边形与边界点进行ndt+icp配准
-        if (!edge_cloud->empty() && !group->empty())
-        {
-
-            pcl::NormalDistributionsTransform<PointType, PointType> ndt;
-            ndt.setTransformationEpsilon(0.01);
-            ndt.setResolution(0.1f);
-            ndt.setMaximumIterations(50);
-            ndt.setInputSource(edge_cloud);
-            ndt.setInputTarget(transformed_group2);
-            Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
-            PointCloudPtr aligned_cloud(new PointCloud);
-            ndt.align(*aligned_cloud, initial_guess);
-
-            // icp配准
-            pcl::IterativeClosestPoint<PointType, PointType> icp;
-            icp.setMaximumIterations(200);         // 迭代次数
-            icp.setMaxCorrespondenceDistance(MaxCorrespondenceDistance); // 最大对应点距离
-            icp.setTransformationEpsilon(1e-6);    // 收敛阈值
-            icp.setEuclideanFitnessEpsilon(1e-6);  // 欧氏距离阈值
-            icp.setRANSACIterations(1000);        // 不使用RANSAC
-            icp.setInputSource(edge_cloud);
-            icp.setInputTarget(transformed_group2);
-            PointCloudPtr icp_aligned_cloud(new PointCloud);
-            icp.align(*icp_aligned_cloud, ndt.getFinalTransformation());
-            // printf("ICP score: %f\n", icp.getFitnessScore());
-            Eigen::Matrix4f final_transformation = icp.getFinalTransformation();
-            if (icp.getFitnessScore() <= 0.001)
+            // edge_cloud->points.push_back(convertVelodyneToXYZI(left_point));
+            // edge_cloud->points.push_back(convertVelodyneToXYZI(right_point));
+            int left_inter, right_inter;
+            if (!start_lower_point)
             {
-                PointCloudPtr transformed_group(new PointCloud);
-                pcl::transformPointCloud(*transformed_group2, *transformed_group, final_transformation);
-                *group = *transformed_group;
+                if (i == 0)
+                {
+                    group1->points.push_back(convertVelodyneToXYZI(left_point));
+                    group4->points.push_back(convertVelodyneToXYZI(right_point));
+                    left_inter = 10;
+                    right_inter = 200;
+                    last_point_dis = computeEuclideanDistance(left_point, right_point);
+                }
+                else if (i == 1)
+                {
+                    group1->points.push_back(convertVelodyneToXYZI(left_point));
+                    group4->points.push_back(convertVelodyneToXYZI(right_point));
+                    left_inter = 10;
+                    right_inter = 200;
+                    double this_point_dis = computeEuclideanDistance(left_point, right_point);
+                    dis_point12 = this_point_dis - last_point_dis;
+                    last_point_dis = this_point_dis;
+                }
+                else
+                {
+                    double this_point_dis = computeEuclideanDistance(left_point, right_point);
+                    if ((this_point_dis - last_point_dis) >= 0.7 * dis_point12)
+                    {
+                        group1->points.push_back(convertVelodyneToXYZI(left_point));
+                        group4->points.push_back(convertVelodyneToXYZI(right_point));
+                        left_inter = 10;
+                        right_inter = 200;
+                    }
+                    else
+                    {
+                        group2->points.push_back(convertVelodyneToXYZI(left_point));
+                        group3->points.push_back(convertVelodyneToXYZI(right_point));
+                        left_inter = 60;
+                        right_inter = 120;
+                        start_lower_point = true;
+                    }
+                }
             }
             else
             {
-                printf("ICP score: %f\n", icp.getFitnessScore());
-                ROS_WARN("ICP score exceeds threshold, calibration failed.");
+                group2->points.push_back(convertVelodyneToXYZI(left_point));
+                group3->points.push_back(convertVelodyneToXYZI(right_point));
+                left_inter = 60;
+                right_inter = 120;
             }
-
-            // 计算变换后的中心点 centroid_target，并添加到group
-            float sum_x = 0.0f;
-            float sum_y = 0.0f;
-            float sum_z = 0.0f;
-            for (const auto &pt : group->points)
-            {
-                sum_x += pt.x;
-                sum_y += pt.y;
-                sum_z += pt.z;
-            }
-            size_t num_points = group->points.size();
-            centroid_target.x = sum_x / num_points;
-            centroid_target.y = sum_y / num_points;
-            centroid_target.z = sum_z / num_points;
-            centroid_target.intensity = 10.0f;
-            group->points.push_back(centroid_target);
+            edge_cloud->points.push_back(convertVelodyneToXYZI(left_point), left_inter);
+            edge_cloud->points.push_back(convertVelodyneToXYZI(right_point), right_inter);
         }
+        // 计算中心点坐标
+        float prev_x = 0.0f;
+        float prev_y = 0.0f;
+        float prev_z = 0.0f;
+        PointCloudPtr group(new PointCloud);
+
+        // 四个点坐标
+        if (group1->points.size() > 1 && group2->points.size() > 1 && group3->points.size() > 1 && group4->points.size() > 1)
+        {
+            PointType up_point = fitLineAndGetIntersection(group1, group4);
+            PointType left_point = fitLineAndGetIntersection(group1, group2);
+            PointType right_point = fitLineAndGetIntersection(group3, group4);
+            PointType lower_point = fitLineAndGetIntersection(group2, group3);
+
+            prev_x = (up_point.x + left_point.x + right_point.x + lower_point.x) / 4;
+            prev_y = (up_point.y + left_point.y + right_point.y + lower_point.y) / 4;
+            prev_z = (up_point.z + left_point.z + right_point.z + lower_point.z) / 4;
+            
+            insertInterpolatnedPoints(up_point, left_point, 30, group);
+            insertInterpolatnedPoints(left_point, lower_point, 30, group);
+            insertInterpolatnedPoints(lower_point, right_point, 30, group);
+            insertInterpolatnedPoints(right_point, up_point, 30, group);
+            centroid_target.x = prev_x;
+            centroid_target.y = prev_y;
+            centroid_target.z = prev_z;
+            centroid_target.intensity = 10.0f;
+            group->points.push_back(centroid_target)
+        }
+        else
+        {
+            ROS_ERROR("Less than four rings, unable to calculate!");
+        }
+        
+
+        // ---------------------------------
+        
+        // for (size_t i = 0; i < rings.size(); ++i)
+        // {
+        //     uint16_t ring = rings[i];
+        //     auto &left_point = ring_boundary_points[ring].first;
+        //     auto &right_point = ring_boundary_points[ring].second;
+        //     edge_cloud->points.push_back(convertVelodyneToXYZI(left_point));
+        //     edge_cloud->points.push_back(convertVelodyneToXYZI(right_point));
+        //     float dx = (left_point.x + right_point.x) / 2;
+        //     float dy = (left_point.y + right_point.y) / 2;
+        //     float dz = (left_point.z + right_point.z) / 2;
+        //     prev_x += dx;
+        //     prev_y += dy;
+        //     prev_z += dz;
+        // }
+        // prev_x /= rings.size();
+        // prev_y /= rings.size();
+        // // prev_z /= rings.size();
+        // prev_z = box_B_z;
+
+        // // 生成四边形，保存到点云group中
+        // float dis_l = board_l / std::sqrt(2);
+        // float step = 0.01f; // 0.5cm
+        // float point_start = 0.0f;
+        // float point_end = dis_l;
+        // PointCloudPtr group(new PointCloud);
+        // for (float y = point_start; y <= point_end; y += step)
+        // {
+        //     PointType pt1, pt2, pt3, pt4;
+        //     pt1.x = prev_x;
+        //     pt2.x = prev_x;
+        //     pt3.x = prev_x;
+        //     pt4.x = prev_x;
+
+        //     pt1.y = y + prev_y - dis_l;
+        //     pt2.y = y + prev_y;
+        //     pt3.y = prev_y + dis_l - y;
+        //     pt4.y = prev_y - y;
+
+        //     pt1.z = prev_z + y;
+        //     pt2.z = prev_z + dis_l - y;
+        //     pt3.z = prev_z - y;
+        //     pt4.z = prev_z - dis_l + y;
+
+        //     pt1.intensity = 255.0f;
+        //     pt2.intensity = 255.0f;
+        //     pt3.intensity = 255.0f;
+        //     pt4.intensity = 255.0f;
+
+        //     group->points.push_back(pt1);
+        //     group->points.push_back(pt2);
+        //     group->points.push_back(pt3);
+        //     group->points.push_back(pt4);
+        // }
+        // //
+        // PointCloudPtr ks_cloud1(new PointCloud);
+        // PointCloudPtr ks_cloud2(new PointCloud);
+        // PointCloudPtr transformed_group2(new PointCloud);
+        // Eigen::Vector3d trans1(-prev_x, -prev_y, -prev_z);
+        // Eigen::Quaterniond quate1 = eulor_deg_to_q(0.0, 0.0, 0.0);
+        // Eigen::Matrix4f mat1 = convertToEigenMatrix4f(trans1, quate1);
+        // pcl::transformPointCloud(*group, *ks_cloud1, mat1);
+
+        // Eigen::Vector3d trans2(0, 0, 0);
+        // Eigen::Quaterniond quate2 = eulor_deg_to_q(ndt_initial_roll, ndt_initial_pitch, ndt_initial_yaw);
+        // Eigen::Matrix4f mat2 = convertToEigenMatrix4f(trans2, quate2);
+        // pcl::transformPointCloud(*ks_cloud1, *ks_cloud2, mat2);
+
+        // Eigen::Vector3d trans3(prev_x, prev_y, prev_z);
+        // Eigen::Quaterniond quate3 = eulor_deg_to_q(0.0, 0.0, 0.0);
+        // Eigen::Matrix4f mat3 = convertToEigenMatrix4f(trans3, quate3);
+
+        // pcl::transformPointCloud(*ks_cloud2, *transformed_group2, mat3);
+
+        // publishPointCloudMsg(boundary_raw_pub, msg->header, transformed_group2);
+
+        // // 生成的四边形与边界点进行ndt+icp配准
+        // if (!edge_cloud->empty() && !group->empty())
+        // {
+
+        //     pcl::NormalDistributionsTransform<PointType, PointType> ndt;
+        //     ndt.setTransformationEpsilon(0.01);
+        //     ndt.setResolution(0.1f);
+        //     ndt.setMaximumIterations(50);
+        //     ndt.setInputSource(edge_cloud);
+        //     ndt.setInputTarget(transformed_group2);
+        //     Eigen::Matrix4f initial_guess = Eigen::Matrix4f::Identity();
+        //     PointCloudPtr aligned_cloud(new PointCloud);
+        //     ndt.align(*aligned_cloud, initial_guess);
+
+        //     // icp配准
+        //     pcl::IterativeClosestPoint<PointType, PointType> icp;
+        //     icp.setMaximumIterations(200);                               // 迭代次数
+        //     icp.setMaxCorrespondenceDistance(MaxCorrespondenceDistance); // 最大对应点距离
+        //     icp.setTransformationEpsilon(1e-6);                          // 收敛阈值
+        //     icp.setEuclideanFitnessEpsilon(1e-6);                        // 欧氏距离阈值
+        //     icp.setRANSACIterations(1000);                               // 不使用RANSAC
+        //     icp.setInputSource(edge_cloud);
+        //     icp.setInputTarget(transformed_group2);
+        //     PointCloudPtr icp_aligned_cloud(new PointCloud);
+        //     icp.align(*icp_aligned_cloud, ndt.getFinalTransformation());
+        //     // printf("ICP score: %f\n", icp.getFitnessScore());
+        //     Eigen::Matrix4f final_transformation = icp.getFinalTransformation();
+        //     if (icp.getFitnessScore() <= 0.001)
+        //     {
+        //         PointCloudPtr transformed_group(new PointCloud);
+        //         pcl::transformPointCloud(*transformed_group2, *transformed_group, final_transformation);
+        //         *group = *transformed_group;
+        //     }
+        //     else
+        //     {
+        //         printf("ICP score: %f\n", icp.getFitnessScore());
+        //         ROS_WARN("ICP score exceeds threshold, calibration failed.");
+        //     }
+
+        //     // 计算变换后的中心点 centroid_target，并添加到group
+        //     float sum_x = 0.0f;
+        //     float sum_y = 0.0f;
+        //     float sum_z = 0.0f;
+        //     for (const auto &pt : group->points)
+        //     {
+        //         sum_x += pt.x;
+        //         sum_y += pt.y;
+        //         sum_z += pt.z;
+        //     }
+        //     size_t num_points = group->points.size();
+        //     centroid_target.x = sum_x / num_points;
+        //     centroid_target.y = sum_y / num_points;
+        //     centroid_target.z = sum_z / num_points;
+        //     centroid_target.intensity = 10.0f;
+        //     group->points.push_back(centroid_target);
+        // }
 
         // 发布生成的四边形 group
         publishPointCloudMsg(boundary_pub, msg->header, group);
@@ -674,6 +767,33 @@ public:
         return p;
     }
 
+    PointType convertVelodyneToXYZI(const PointXYZIRT &pt, const int &inten)
+    {
+        PointType p;
+        p.x = pt.x;
+        p.y = pt.y;
+        p.z = pt.z;
+        p.intensity = inten;
+        return p;
+    }
+
+    void insertInterpolatnedPoints(const PointType& p1, const PointType& p2, int n, PointCloudPtr group)
+    {
+        if (n <= 0) return;  // 没有插值点，直接返回
+
+        for (int i = 1; i <= n; ++i)
+        {
+            float t = static_cast<float>(i) / n; // t从0到1之间均匀分布，不包含0,包含1
+
+            PointType interp_point;
+            interp_point.x = p1.x + t * (p2.x - p1.x);
+            interp_point.y = p1.y + t * (p2.y - p1.y);
+            interp_point.z = p1.z + t * (p2.z - p1.z);
+
+            group->points.push_back(interp_point);
+        }
+    }
+
     // 计算两个点的欧式距离
     double computeEuclideanDistance(const PointType &point1, const PointType &point2)
     {
@@ -681,6 +801,92 @@ public:
             std::pow(point1.x - point2.x, 2) +
             std::pow(point1.y - point2.y, 2) +
             std::pow(point1.z - point2.z, 2));
+    }
+
+    double computeEuclideanDistance(const VelodynePointXYZIRT &point1, const VelodynePointXYZIRT &point2)
+    {
+        return std::sqrt(
+            std::pow(point1.x - point2.x, 2) +
+            std::pow(point1.y - point2.y, 2) +
+            std::pow(point1.z - point2.z, 2));
+    }
+
+    PointType computeClosestPointsMidpoint(
+        const Eigen::VectorXf &line1_coeffs,
+        const Eigen::VectorXf &line2_coeffs)
+    {
+        // 提取直线1的参数 (p1, d1)
+        Eigen::Vector3f p1 = line1_coeffs.head<3>();
+        Eigen::Vector3f d1 = line1_coeffs.tail<3>();
+
+        // 提取直线2的参数 (p2, d2)
+        Eigen::Vector3f p2 = line2_coeffs.head<3>();
+        Eigen::Vector3f d2 = line2_coeffs.tail<3>();
+
+        // 计算叉积 n = d1 × d2
+        Eigen::Vector3f n = d1.cross(d2);
+        float n_norm = n.squaredNorm();
+
+        // 如果两直线平行（n ≈ 0），直接返回 p1（或自定义处理）
+        if (n_norm < 1e-6)
+        {
+            PointType midpoint;
+            midpoint.x = (p1.x() + p2.x()) / 2;
+            midpoint.y = (p1.y() + p2.y()) / 2;
+            midpoint.z = (p1.z() + p2.z()) / 2;
+            return midpoint;
+        }
+
+        // 计算连接向量 w = p2 - p1
+        Eigen::Vector3f w = p2 - p1;
+
+        // 计算 t 和 s
+        float t = w.cross(d2).dot(n) / n_norm;
+        float s = w.cross(d1).dot(n) / n_norm;
+
+        // 计算最近点 q1 和 q2
+        Eigen::Vector3f q1 = p1 + t * d1;
+        Eigen::Vector3f q2 = p2 + s * d2;
+
+        // 返回中点
+        PointType midpoint;
+        midpoint.x = (q1.x() + q2.x()) / 2;
+        midpoint.y = (q1.y() + q2.y()) / 2;
+        midpoint.z = (q1.z() + q2.z()) / 2;
+        return midpoint;
+    }
+
+    PointType fitLineAndGetIntersection(
+        const PointCloudPtr &cloud1,
+        const PointCloudPtr &cloud2)
+    {
+        // 拟合第一条直线
+        pcl::SampleConsensusModelLine<PointType>::Ptr model1(new pcl::SampleConsensusModelLine<PointType>(cloud1));
+        pcl::RandomSampleConsensus<PointType> ransac1(model1);
+        ransac1.setDistanceThreshold(0.01);
+        ransac1.computeModel();
+        Eigen::VectorXf coeffs1;
+        ransac1.getModelCoefficients(coeffs1); // [px, py, pz, dx, dy, dz]
+
+        // 拟合第二条直线
+        pcl::SampleConsensusModelLine<PointType>::Ptr model2(new pcl::SampleConsensusModelLine<PointType>(cloud2));
+        pcl::RandomSampleConsensus<PointType> ransac2(model2);
+        ransac2.setDistanceThreshold(0.01);
+        ransac2.computeModel();
+        Eigen::VectorXf coeffs2;
+        ransac2.getModelCoefficients(coeffs2);
+
+        // 尝试计算交点
+        PointType intersection;
+        if (pcl::lineWithLineIntersection(coeffs1, coeffs2, intersection))
+        {
+            return intersection; // 如果相交，返回交点
+        }
+        else
+        {
+            // 如果不相交，计算最近点的中点
+            return computeClosestPointsMidpoint(coeffs1, coeffs2);
+        }
     }
 
     // 计算两组点云之间的RMSE

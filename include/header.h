@@ -25,6 +25,9 @@
 #include <pcl/filters/extract_indices.h>
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl/common/centroid.h>
+#include <pcl/sample_consensus/ransac.h>
+#include <pcl/sample_consensus/sac_model_line.h>
+#include <pcl/common/intersections.h>
 
 #include <dynamic_reconfigure/server.h>
 
@@ -36,6 +39,7 @@
 
 // Eigen
 #include <Eigen/Core>
+#include <Eigen/Dense>
 #include <Eigen/Geometry>
 
 using namespace std;
