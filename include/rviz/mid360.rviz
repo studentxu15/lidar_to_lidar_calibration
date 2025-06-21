@@ -72,7 +72,7 @@ Visualization Manager:
       Size (Pixels): 25
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /calibration/mid360_back_s/center
+      Topic: /calibration/source_cloud/center
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -100,7 +100,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.004999999888241291
       Style: Flat Squares
-      Topic: /calibration/mid360_back_s/filtered
+      Topic: /calibration/source_cloud/filtered
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -178,7 +178,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 9.193008422851562
+      Distance: 8.646533966064453
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -186,17 +186,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -0.5689283609390259
-        Y: -0.4962773323059082
-        Z: 0.5034179091453552
+        X: -0.9064449071884155
+        Y: -0.3458973467350006
+        Z: 0.6052880883216858
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.0753979682922363
+      Pitch: 0.4703982472419739
       Target Frame: <Fixed Frame>
-      Yaw: 1.295403003692627
+      Yaw: 2.93540620803833
     Saved: ~
 Window Geometry:
   Displays:

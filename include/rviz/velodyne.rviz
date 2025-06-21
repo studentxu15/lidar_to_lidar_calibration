@@ -23,7 +23,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: velo_raw
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -72,7 +72,7 @@ Visualization Manager:
       Size (Pixels): 10
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /calibration/velodyne_points/boundary_cloud
+      Topic: /calibration/target_cloud/boundary_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -89,7 +89,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -100,11 +100,11 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.019999999552965164
       Style: Flat Squares
-      Topic: /calibration/velodyne_points/filtered
+      Topic: /calibration/target_cloud/filtered
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -128,7 +128,7 @@ Visualization Manager:
       Size (Pixels): 3
       Size (m): 0.019999999552965164
       Style: Flat Squares
-      Topic: /calibration/velodyne_points/edge_cloud
+      Topic: /calibration/target_cloud/edge_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -166,7 +166,7 @@ Visualization Manager:
       Marker Topic: /marker_B
       Name: Marker
       Namespaces:
-        {}
+        cube: true
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -177,34 +177,6 @@ Visualization Manager:
       Radius: 0.05000000074505806
       Reference Frame: <Fixed Frame>
       Show Trail: false
-      Value: true
-    - Alpha: 1
-      Autocompute Intensity Bounds: true
-      Autocompute Value Bounds:
-        Max Value: 0.05213204026222229
-        Min Value: -0.3721320331096649
-        Value: true
-      Axis: Z
-      Channel Name: intensity
-      Class: rviz/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: AxisColor
-      Decay Time: 0
-      Enabled: true
-      Invert Rainbow: false
-      Max Color: 255; 255; 255
-      Min Color: 0; 0; 0
-      Name: velo_boundary_raw
-      Position Transformer: XYZ
-      Queue Size: 10
-      Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.009999999776482582
-      Style: Flat Squares
-      Topic: /calibration/velodyne_points/boundary_raw_cloud
-      Unreliable: false
-      Use Fixed Frame: true
-      Use rainbow: true
       Value: true
   Enabled: true
   Global Options:
@@ -242,17 +214,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
+        X: 0.7635604739189148
+        Y: -0.056098680943250656
+        Z: 0.9828853011131287
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7153983116149902
+      Pitch: 0.4503985643386841
       Target Frame: <Fixed Frame>
-      Yaw: 2.590397596359253
+      Yaw: 2.7504007816314697
     Saved: ~
 Window Geometry:
   Displays:

@@ -29,6 +29,9 @@
 #include <pcl/sample_consensus/sac_model_line.h>
 #include <pcl/common/intersections.h>
 #include <pcl/common/distances.h>
+#include <pcl/common/pca.h> 
+#include <pcl/segmentation/sac_segmentation.h>
+
 
 #include <dynamic_reconfigure/server.h>
 
