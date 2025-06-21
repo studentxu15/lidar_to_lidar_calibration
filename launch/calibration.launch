@@ -5,11 +5,19 @@
 
     <node pkg="lidar_to_lidar_calibration" type="lidar_to_lidar_calibration" name="calibration_test" output="screen">
         <rosparam subst_value="true">
-            source_lidar_topic: "/mid360_front_s"
+            <!-- source_lidar_topic: "/mid360_front_s"
+            source_cloud_type: 1     <!- - cloud_type: 0 is velodyne; 1 is mid360- ->
             target_lidar_topic: "/velodyne_points"
+            target_cloud_type: 0 -->
+            source_lidar_topic: "/velodyne_points"
+            source_cloud_type: 0     <!-- cloud_type: 0 is velodyne; 1 is mid360-->
+            target_lidar_topic: "/mid360_front_s"
+            target_cloud_type: 1
+
+
             initial_topic: "initialpose"
             flag_topic: "calibration_flag"
-            source_lidar_queue_size: 20
+            lidar_queue_threshold: 20
             icp_score_threshold: 0.25
             svd_threshold: 1.0
             board_l: 0.3
@@ -24,8 +32,8 @@
     </node>
 
     <group if="$(arg calibration_rviz)">
-        <node launch-prefix="nice" pkg="rviz" type="rviz" name="calibration_rviz_1" args="-d $(find lidar_to_lidar_calibration)/include/rviz/mid360.rviz" />
-        <node launch-prefix="nice" pkg="rviz" type="rviz" name="calibration_rviz_2" args="-d $(find lidar_to_lidar_calibration)/include/rviz/velodyne.rviz" />
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="calibration_rviz_1" args="-d $(find lidar_to_lidar_calibration)/include/rviz/calib_source.rviz" />
+        <node launch-prefix="nice" pkg="rviz" type="rviz" name="calibration_rviz_2" args="-d $(find lidar_to_lidar_calibration)/include/rviz/calib_target.rviz" />
     </group>
 
     <group if="$(arg calibration_open_lidar_sdk)">

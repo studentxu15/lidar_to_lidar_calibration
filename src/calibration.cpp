@@ -9,27 +9,28 @@ public:
     ros::Subscriber initialpose_sub;
     ros::Subscriber header_sub;
 
-    ros::Publisher merged_cloud_pub;
+    ros::Publisher source_filtered_pub;
     ros::Publisher target_filtered_pub;
     ros::Publisher calib_result_pub;
     ros::Publisher pub_mark_A;
     ros::Publisher pub_mark_B;
-    ros::Publisher boundary_pub;
-    ros::Publisher center_A_pub;
+    ros::Publisher target_center_pub;
+    ros::Publisher source_center_pub;
     ros::Publisher all_centroid_A_pub;
     ros::Publisher all_centroid_B_pub;
-    ros::Publisher edge_pub;
+    ros::Publisher velodyne_edge_pub;
     ros::Publisher feedback_flag_pub;
 
-    deque<PointCloudPtr> source_lidar_queue;
+    
     deque<PointCloudPtr> source_lidar_raw_queue;
     deque<PointCloudPtr> target_lidar_raw_queue;
-    deque<PointXYZIRTCloudPtr> target_lidar_queue;
+    deque<PointCloudPtr> source_lidar_queue;
+    deque<PointCloudPtr> target_lidar_queue;
+    deque<PointXYZIRTCloudPtr> source_lidar_queue_velo;
+    deque<PointXYZIRTCloudPtr> target_lidar_queue_velo;
     PointCloudPtr source_merge_cloud;
-    PointXYZIRTCloudPtr target_current_cloud;
+    // PointXYZIRTCloudPtr target_current_cloud;
 
-    PointCloudPtr source_raw_cloud;
-    PointXYZIRTCloudPtr target_raw_cloud;
 
     PointCloudPtr source_center_cloud;
     PointCloudPtr target_center_cloud;
@@ -67,11 +68,11 @@ public:
         initialpose_sub = nh.subscribe(initial_topic, 10, &LidarCalibration::initialPoseCallback, this);
         header_sub = nh.subscribe(flag_topic, 10, &LidarCalibration::FlagCallback, this);
 
-        merged_cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_cloud_name + "/filtered", 10);
+        source_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_cloud_name + "/filtered", 10);
         target_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_cloud_name + "/filtered", 10);
-        boundary_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_cloud_name + "/boundary_cloud", 10);
-        center_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_cloud_name + "/center", 10);
-        edge_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_cloud_name + "/edge_cloud", 10);
+        source_center_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + source_cloud_name + "/center", 10);
+        target_center_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/" + target_cloud_name + "/center", 10);
+        velodyne_edge_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration/velodyne/edge_cloud", 10);
         all_centroid_A_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration" + source_cloud_name + "/all_centroid", 10);
         all_centroid_B_pub = nh.advertise<sensor_msgs::PointCloud2>("/calibration" + target_cloud_name + "/all_centroid", 10);
         calib_result_pub = nh.advertise<geometry_msgs::PoseStamped>(calibration_result_topic, 10);
@@ -88,9 +89,7 @@ public:
     {
         // Allocate memory for point clouds
         source_merge_cloud.reset(new PointCloud);
-        target_current_cloud.reset(new PointXYZIRTCloud);
-        source_raw_cloud.reset(new PointCloud);
-        target_raw_cloud.reset(new PointXYZIRTCloud);
+        // target_current_cloud.reset(new PointXYZIRTCloud);
         source_center_cloud.reset(new PointCloud);
         target_center_cloud.reset(new PointCloud);
         // for (int i = 0; i < 6; ++i)
@@ -123,287 +122,47 @@ public:
     void sourceLidarCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
     {
         source_frame = msg->header.frame_id;
-        PointCloudPtr cloud(new PointCloud);
-        pcl::fromROSMsg(*msg, *cloud); // msg转PointCloudPtr
-        source_raw_cloud = cloud;
-        source_lidar_raw_queue.push_back(cloud);
-        if (source_lidar_raw_queue.size() > 20)
-        {
-            source_lidar_raw_queue.pop_front();
-        }
-        if (auto_find_center_source)
-        {
-            find_centroid_auto(source_lidar_raw_queue, box_A_x, box_A_y, box_A_z, box_A_yaw);
-            updateParam();
-            auto_find_center_source = false;
-        }
-
-        // 箱体滤波，保留 箱体内的点云为 cloud_filtered
-        PointCloudPtr cloud_filtered(new PointCloud);
-        Eigen::Vector3d translation(box_A_x, box_A_y, box_A_z);
-        Eigen::Quaterniond quaternion = eulor_deg_to_q(box_A_roll, box_A_pitch, box_A_yaw);
-        Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
-        Eigen::Matrix4f T_inv = T.inverse();
-        for (const auto &pt : cloud->points)
-        {
-            Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
-            Eigen::Vector4f p_cube = T_inv * p_sensor;
-            if (fabs(p_cube.x()) <= box_A_lx / 2.0f &&
-                fabs(p_cube.y()) <= box_A_ly / 2.0f &&
-                fabs(p_cube.z()) <= box_A_lz / 2.0f)
-            {
-                cloud_filtered->points.push_back(pt);
-            }
-        }
-
-        // 将点云添加到队列中，并融合点云为 source_merge_cloud
-        source_lidar_queue.push_back(cloud_filtered);
-        if (source_lidar_queue.size() > source_lidar_queue_size)
-        {
-            source_lidar_queue.pop_front();
-        }
-        source_merge_cloud = mergePointClouds(source_lidar_queue);
-
-        // 发布融合后的点云
-        publishPointCloudMsg(merged_cloud_pub, msg->header, source_merge_cloud);
-
-        // 将点云进行过滤后提取中心点，并发布出去 plan_cloud
-        PointCloudPtr plan_cloud(new PointCloud);
-        if (!source_merge_cloud->empty())
-        {
-            pcl::VoxelGrid<PointType> voxel_filter;
-            voxel_filter.setInputCloud(source_merge_cloud);
-            voxel_filter.setLeafSize(0.01f, 0.01f, 0.01f);
-            PointCloudPtr filtered_cloud(new PointCloud);
-            voxel_filter.filter(*filtered_cloud);
-
-            float sum_x = 0.0f;
-            float sum_y = 0.0f;
-            float sum_z = 0.0f;
-            for (const auto &pt : filtered_cloud->points)
-            {
-                sum_x += pt.x;
-                sum_y += pt.y;
-                sum_z += pt.z;
-            }
-            size_t num_points = filtered_cloud->points.size();
-            centroid_source.x = sum_x / num_points;
-            centroid_source.y = sum_y / num_points;
-            centroid_source.z = sum_z / num_points;
-            centroid_source.intensity = 200.0f;
-            plan_cloud->points.push_back(centroid_source);
-        }
-
-        // 发布中心点
-        publishPointCloudMsg(center_A_pub, msg->header, plan_cloud);
-        if (!source_center_cloud->points.empty())
-        {
-            publishPointCloudMsg(all_centroid_A_pub, msg->header, source_center_cloud);
-        }
-
+        // 判断
         vector<double> marker_A_rgb = {1.0, 0.0, 0.0};
-        publishCubeMarker(pub_mark_A, source_frame, box_A_lx, box_A_ly, box_A_lz, box_A_x, box_A_y, box_A_z, box_A_roll, box_A_pitch, box_A_yaw, marker_A_rgb);
+        if (source_cloud_type == 1)
+        {
+            mid360_callback(msg, source_lidar_raw_queue, auto_find_center_source,
+                            box_A_x, box_A_y, box_A_z, box_A_yaw, box_A_roll, box_A_pitch, box_A_lx, box_A_ly,
+                            box_A_lz, source_lidar_queue, source_filtered_pub, centroid_source,
+                            source_center_pub, source_center_cloud, all_centroid_A_pub, marker_A_rgb, pub_mark_A);
+        }
+        else
+        {
+            velodyne_callback(msg, source_lidar_raw_queue, auto_find_center_source,
+                              box_A_x, box_A_y, box_A_z, box_A_yaw, box_A_roll, box_A_pitch, box_A_lx, box_A_ly,
+                              box_A_lz, source_lidar_queue_velo, source_filtered_pub, centroid_source,
+                              source_center_pub, source_center_cloud, all_centroid_A_pub, marker_A_rgb, pub_mark_A, velodyne_edge_pub);
+        }
+
+        //--------------------
     }
 
     void targetLidarCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
     {
         target_frame = msg->header.frame_id;
-        PointXYZIRTCloudPtr cloud(new PointXYZIRTCloud);
-        pcl::fromROSMsg(*msg, *cloud);
-        target_raw_cloud = cloud;
-        PointCloudPtr cloud_copy(new PointCloud);
-        pcl::fromROSMsg(*msg, *cloud_copy);
-        target_lidar_raw_queue.push_back(cloud_copy);
-        if (target_lidar_raw_queue.size() > 20)
+        // 判断
+        vector<double> input_marker_rgb = {0.0, 1.0, 0.0};
+        if (target_cloud_type == 0)
         {
-            target_lidar_raw_queue.pop_front();
-        }
-        if (auto_find_center_target)
-        {
-            find_centroid_auto(target_lidar_raw_queue, box_B_x, box_B_y, box_B_z, box_B_yaw);
-            updateParam();
-            auto_find_center_target = false;
-        }
-
-        // 将点云添加到队列中，并融合点云为 target_merge_cloud
-        target_lidar_queue.push_back(target_raw_cloud);
-        if (target_lidar_queue.size() > source_lidar_queue_size)
-        {
-            target_lidar_queue.pop_front();
-        }
-        PointXYZIRTCloudPtr target_merge_cloud = mergePointClouds(target_lidar_queue);
-
-        // 箱体滤波，保留 箱体内的点云为 target_current_cloud
-        target_current_cloud->points.clear();
-        Eigen::Vector3d translation(box_B_x, box_B_y, box_B_z);
-        Eigen::Quaterniond quaternion = eulor_deg_to_q(box_B_roll, box_B_pitch, box_B_yaw);
-        Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
-        Eigen::Matrix4f T_inv = T.inverse();
-        target_current_cloud->points.clear();
-        for (const auto &pt : target_merge_cloud->points)
-        {
-            Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
-            Eigen::Vector4f p_cube = T_inv * p_sensor;
-            if (fabs(p_cube.x()) <= box_B_lx / 2.0f &&
-                fabs(p_cube.y()) <= box_B_ly / 2.0f &&
-                fabs(p_cube.z()) <= box_B_lz / 2.0f)
-            {
-                target_current_cloud->points.push_back(pt);
-            }
-        }
-
-        // 将每一条线的左右端点保存到 ring_boundary_points
-        std::map<uint16_t, std::pair<PointXYZIRT, PointXYZIRT>> ring_boundary_points;
-        for (const auto &point : target_current_cloud->points)
-        {
-            uint16_t ring = point.ring;
-            if (ring_boundary_points.find(ring) == ring_boundary_points.end())
-            {
-                ring_boundary_points[ring] = std::make_pair(point, point);
-            }
-            else
-            {
-                auto &left_point = ring_boundary_points[ring].first;
-                auto &right_point = ring_boundary_points[ring].second;
-                // 通过角度值找边界
-                float left_angle = std::atan2(left_point.y, left_point.x);
-                float right_angle = std::atan2(right_point.y, right_point.x);
-                float this_angle = std::atan2(point.y, point.x);
-                if (this_angle > left_angle)
-                {
-                    left_point = point;
-                }
-                else if (this_angle < right_angle)
-                {
-                    right_point = point;
-                }
-
-                // 缺乏横跨-180/180度线的解决方法，因实际用不到，暂时不处理
-            }
-        }
-
-        std::vector<uint16_t> rings;
-        for (const auto &kv : ring_boundary_points)
-        {
-            rings.push_back(kv.first);
-        }
-        std::sort(rings.begin(), rings.end());
-        PointCloudPtr edge_cloud(new PointCloud); // 边界点
-
-        // add -----------------------------
-        PointCloudPtr group1(new PointCloud);
-        PointCloudPtr group2(new PointCloud);
-        PointCloudPtr group3(new PointCloud);
-        PointCloudPtr group4(new PointCloud);
-        double dis_point12 = 0.0;
-        double last_point_dis = 0.0;
-        bool start_lower_point = false;
-        for (size_t i = 0; i < rings.size(); ++i)
-        {
-            uint16_t ring = rings[i];
-            auto &left_point = ring_boundary_points[ring].first;
-            auto &right_point = ring_boundary_points[ring].second;
-            // edge_cloud->points.push_back(convertVelodyneToXYZI(left_point));
-            // edge_cloud->points.push_back(convertVelodyneToXYZI(right_point));
-            int left_inter, right_inter;
-            if (!start_lower_point)
-            {
-                if (i == 0)
-                {
-                    group1->points.push_back(convertVelodyneToXYZI(left_point));
-                    group4->points.push_back(convertVelodyneToXYZI(right_point));
-                    left_inter = 10;
-                    right_inter = 200;
-                    last_point_dis = computeEuclideanDistance(left_point, right_point);
-                }
-                else if (i == 1)
-                {
-                    group1->points.push_back(convertVelodyneToXYZI(left_point));
-                    group4->points.push_back(convertVelodyneToXYZI(right_point));
-                    left_inter = 10;
-                    right_inter = 200;
-                    double this_point_dis = computeEuclideanDistance(left_point, right_point);
-                    dis_point12 = this_point_dis - last_point_dis;
-                    last_point_dis = this_point_dis;
-                }
-                else
-                {
-                    double this_point_dis = computeEuclideanDistance(left_point, right_point);
-                    if ((this_point_dis - last_point_dis) >= 0.7 * dis_point12)
-                    {
-                        group1->points.push_back(convertVelodyneToXYZI(left_point));
-                        group4->points.push_back(convertVelodyneToXYZI(right_point));
-                        left_inter = 10;
-                        right_inter = 200;
-                    }
-                    else
-                    {
-                        group2->points.push_back(convertVelodyneToXYZI(left_point));
-                        group3->points.push_back(convertVelodyneToXYZI(right_point));
-                        left_inter = 60;
-                        right_inter = 120;
-                        start_lower_point = true;
-                    }
-                }
-            }
-            else
-            {
-                group2->points.push_back(convertVelodyneToXYZI(left_point));
-                group3->points.push_back(convertVelodyneToXYZI(right_point));
-                left_inter = 60;
-                right_inter = 120;
-            }
-            edge_cloud->points.push_back(convertVelodyneToXYZI(left_point, left_inter));
-            edge_cloud->points.push_back(convertVelodyneToXYZI(right_point, right_inter));
-        }
-        // 计算中心点坐标
-        float prev_x = 0.0f;
-        float prev_y = 0.0f;
-        float prev_z = 0.0f;
-        PointCloudPtr group(new PointCloud);
-
-        // 四个点坐标
-        if (group1->points.size() > 1 && group2->points.size() > 1 && group3->points.size() > 1 && group4->points.size() > 1)
-        {
-            PointType up_point = fitLineAndGetIntersection(group1, group4);
-            PointType left_point = fitLineAndGetIntersection(group1, group2);
-            PointType right_point = fitLineAndGetIntersection(group3, group4);
-            PointType lower_point = fitLineAndGetIntersection(group2, group3);
-
-            prev_x = (up_point.x + left_point.x + right_point.x + lower_point.x) / 4;
-            prev_y = (up_point.y + left_point.y + right_point.y + lower_point.y) / 4;
-            prev_z = (up_point.z + left_point.z + right_point.z + lower_point.z) / 4;
-
-            insertInterpolatnedPoints(up_point, left_point, 30, group);
-            insertInterpolatnedPoints(left_point, lower_point, 30, group);
-            insertInterpolatnedPoints(lower_point, right_point, 30, group);
-            insertInterpolatnedPoints(right_point, up_point, 30, group);
-            centroid_target.x = prev_x;
-            centroid_target.y = prev_y;
-            centroid_target.z = prev_z;
-            centroid_target.intensity = 10.0f;
-            group->points.push_back(centroid_target);
+            velodyne_callback(msg, target_lidar_raw_queue, auto_find_center_target,
+                              box_B_x, box_B_y, box_B_z, box_B_yaw, box_B_roll, box_B_pitch, box_B_lx, box_B_ly,
+                              box_B_lz, target_lidar_queue_velo, target_filtered_pub, centroid_target,
+                              target_center_pub, target_center_cloud, all_centroid_B_pub, input_marker_rgb, pub_mark_B, velodyne_edge_pub);
         }
         else
         {
-            ROS_ERROR("Less than four rings, unable to calculate!");
+            mid360_callback(msg, target_lidar_raw_queue, auto_find_center_target,
+                            box_B_x, box_B_y, box_B_z, box_B_yaw, box_B_roll, box_B_pitch, box_B_lx, box_B_ly,
+                            box_B_lz, target_lidar_queue, target_filtered_pub, centroid_target,
+                            target_center_pub, target_center_cloud, all_centroid_B_pub, input_marker_rgb, pub_mark_B);
         }
 
-        // 发布生成的四边形 group
-        publishPointCloudMsg(boundary_pub, msg->header, group);
-
-        // 发布边缘点
-        publishPointCloudMsg(edge_pub, msg->header, edge_cloud);
-
-        // 发布过滤后的点云
-        publishPointCloudMsg(target_filtered_pub, msg->header, target_current_cloud);
-
-        if (!target_center_cloud->points.empty())
-        {
-            publishPointCloudMsg(all_centroid_B_pub, msg->header, target_center_cloud);
-        }
-        vector<double> marker_B_rgb = {0.0, 1.0, 0.0};
-        publishCubeMarker(pub_mark_B, target_frame, box_B_lx, box_B_ly, box_B_lz, box_B_x, box_B_y, box_B_z, box_B_roll, box_B_pitch, box_B_yaw, marker_B_rgb);
+        //-----------------------------------------
     }
 
     // 给定初始位姿(废弃)
@@ -898,7 +657,7 @@ public:
     }
 
     // 箱体发布函数
-    void publishCubeMarker(ros::Publisher &marker_pub, string frame_id,
+    void publishCubeMarker(const ros::Publisher &marker_pub, string frame_id,
                            double lx, double ly, double lz, double x, double y, double z,
                            double roll, double pitch, double yaw, const std::vector<double> &rgb)
     {
@@ -1057,13 +816,314 @@ public:
         ROS_INFO("Dynamic reconfigure parameters updated!");
     }
 
+    //-----------------------------------------------------
+
+    void mid360_callback(const sensor_msgs::PointCloud2ConstPtr &msg,
+                         deque<PointCloudPtr> &input_lidar_raw_queue, bool &input_auto_find_center,
+                         double &input_box_x, double &input_box_y, double &input_box_z, double &input_box_yaw,
+                         double &input_box_roll, double &input_box_pitch, double &input_box_lx, double &input_box_ly,
+                         double &input_box_lz, deque<PointCloudPtr> &input_lidar_queue,
+                         const ros::Publisher &input_source_filtered_pub, PointType &input_centroid,
+                         const ros::Publisher &input_center_cloud_pub, const PointCloudPtr &input_center_cloud,
+                         const ros::Publisher &input_all_centroid_pub, vector<double> input_marker_rgb,
+                         const ros::Publisher &input_pub_mark)
+    {
+        PointCloudPtr cloud(new PointCloud);
+        pcl::fromROSMsg(*msg, *cloud); // msg转PointCloudPtr
+        input_lidar_raw_queue.push_back(cloud);
+        if (input_lidar_raw_queue.size() > 20)
+        {
+            input_lidar_raw_queue.pop_front();
+        }
+        if (input_auto_find_center)
+        {
+            find_centroid_auto(input_lidar_raw_queue, input_box_x, input_box_y, input_box_z, input_box_yaw);
+            updateParam();
+            input_auto_find_center = false;
+        }
+
+        // 箱体滤波，保留 箱体内的点云为 cloud_filtered
+        PointCloudPtr cloud_filtered(new PointCloud);
+        Eigen::Vector3d translation(input_box_x, input_box_y, input_box_z);
+        Eigen::Quaterniond quaternion = eulor_deg_to_q(input_box_roll, input_box_pitch, input_box_yaw);
+        Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
+        Eigen::Matrix4f T_inv = T.inverse();
+        for (const auto &pt : cloud->points)
+        {
+            Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
+            Eigen::Vector4f p_cube = T_inv * p_sensor;
+            if (fabs(p_cube.x()) <= input_box_lx / 2.0f &&
+                fabs(p_cube.y()) <= input_box_ly / 2.0f &&
+                fabs(p_cube.z()) <= input_box_lz / 2.0f)
+            {
+                cloud_filtered->points.push_back(pt);
+            }
+        }
+
+        // 将点云添加到队列中，并融合点云为 source_merge_cloud
+        input_lidar_queue.push_back(cloud_filtered);
+        if (input_lidar_queue.size() > lidar_queue_threshold)
+        {
+            input_lidar_queue.pop_front();
+        }
+        PointCloudPtr input_merge_cloud = mergePointClouds(input_lidar_queue);
+
+        // 发布融合后的点云
+        publishPointCloudMsg(input_source_filtered_pub, msg->header, input_merge_cloud);
+
+        // 将点云进行过滤后提取中心点，并发布出去 plan_cloud
+        PointCloudPtr plan_cloud(new PointCloud);
+        if (!input_merge_cloud->empty())
+        {
+            pcl::VoxelGrid<PointType> voxel_filter;
+            voxel_filter.setInputCloud(input_merge_cloud);
+            voxel_filter.setLeafSize(0.01f, 0.01f, 0.01f);
+            PointCloudPtr filtered_cloud(new PointCloud);
+            voxel_filter.filter(*filtered_cloud);
+
+            float sum_x = 0.0f;
+            float sum_y = 0.0f;
+            float sum_z = 0.0f;
+            for (const auto &pt : filtered_cloud->points)
+            {
+                sum_x += pt.x;
+                sum_y += pt.y;
+                sum_z += pt.z;
+            }
+            size_t num_points = filtered_cloud->points.size();
+            input_centroid.x = sum_x / num_points;
+            input_centroid.y = sum_y / num_points;
+            input_centroid.z = sum_z / num_points;
+            input_centroid.intensity = 200.0f;
+            plan_cloud->points.push_back(input_centroid);
+        }
+
+        // 发布中心点
+        publishPointCloudMsg(input_center_cloud_pub, msg->header, plan_cloud);
+        if (!input_center_cloud->points.empty())
+        {
+            publishPointCloudMsg(input_all_centroid_pub, msg->header, input_center_cloud);
+        }
+
+        publishCubeMarker(input_pub_mark, msg->header.frame_id, input_box_lx, input_box_ly, input_box_lz, input_box_x,
+                          input_box_y, input_box_z, input_box_roll, input_box_pitch, input_box_yaw, input_marker_rgb);
+    }
+
+    void velodyne_callback(const sensor_msgs::PointCloud2ConstPtr &msg,
+                           deque<PointCloudPtr> &input_lidar_raw_queue, bool &input_auto_find_center,
+                           double &input_box_x, double &input_box_y, double &input_box_z, double &input_box_yaw,
+                           double &input_box_roll, double &input_box_pitch, double &input_box_lx, double &input_box_ly,
+                           double &input_box_lz, deque<PointXYZIRTCloudPtr> &input_lidar_queue,
+                           const ros::Publisher &input_source_filtered_pub, PointType &input_centroid,
+                           const ros::Publisher &input_target_center_pub, const PointCloudPtr &input_center_cloud,
+                           const ros::Publisher &input_all_centroid_pub, vector<double> input_marker_rgb,
+                           const ros::Publisher &input_pub_mark, const ros::Publisher &input_edge_cloud_pub)
+    {
+        PointXYZIRTCloudPtr cloud(new PointXYZIRTCloud);
+        pcl::fromROSMsg(*msg, *cloud);
+        PointCloudPtr cloud_copy(new PointCloud);
+        pcl::fromROSMsg(*msg, *cloud_copy);
+        input_lidar_raw_queue.push_back(cloud_copy);
+        if (input_lidar_raw_queue.size() > lidar_queue_threshold)
+        {
+            input_lidar_raw_queue.pop_front();
+        }
+        if (input_auto_find_center)
+        {
+            find_centroid_auto(input_lidar_raw_queue, input_box_x, input_box_y, input_box_z, input_box_yaw);
+            updateParam();
+            input_auto_find_center = false;
+        }
+
+        // 将点云添加到队列中，并融合点云为 target_merge_cloud
+        input_lidar_queue.push_back(cloud);
+        if (input_lidar_queue.size() > lidar_queue_threshold)
+        {
+            input_lidar_queue.pop_front();
+        }
+        PointXYZIRTCloudPtr target_merge_cloud = mergePointClouds(input_lidar_queue);
+
+        // 箱体滤波，保留 箱体内的点云为 target_current_cloud
+        PointXYZIRTCloudPtr current_filtered_cloud(new PointXYZIRTCloud);
+        Eigen::Vector3d translation(input_box_x, input_box_y, input_box_z);
+        Eigen::Quaterniond quaternion = eulor_deg_to_q(input_box_roll, input_box_pitch, input_box_yaw);
+        Eigen::Matrix4f T = convertToEigenMatrix4f(translation, quaternion);
+        Eigen::Matrix4f T_inv = T.inverse();
+        for (const auto &pt : target_merge_cloud->points)
+        {
+            Eigen::Vector4f p_sensor(pt.x, pt.y, pt.z, 1.0f);
+            Eigen::Vector4f p_cube = T_inv * p_sensor;
+            if (fabs(p_cube.x()) <= box_B_lx / 2.0f &&
+                fabs(p_cube.y()) <= box_B_ly / 2.0f &&
+                fabs(p_cube.z()) <= box_B_lz / 2.0f)
+            {
+                current_filtered_cloud->points.push_back(pt);
+            }
+        }
+
+        // 将每一条线的左右端点保存到 ring_boundary_points
+        std::map<uint16_t, std::pair<PointXYZIRT, PointXYZIRT>> ring_boundary_points;
+        for (const auto &point : current_filtered_cloud->points)
+        {
+            uint16_t ring = point.ring;
+            if (ring_boundary_points.find(ring) == ring_boundary_points.end())
+            {
+                ring_boundary_points[ring] = std::make_pair(point, point);
+            }
+            else
+            {
+                auto &left_point = ring_boundary_points[ring].first;
+                auto &right_point = ring_boundary_points[ring].second;
+                // 通过角度值找边界
+                float left_angle = std::atan2(left_point.y, left_point.x);
+                float right_angle = std::atan2(right_point.y, right_point.x);
+                float this_angle = std::atan2(point.y, point.x);
+                if (this_angle > left_angle)
+                {
+                    left_point = point;
+                }
+                else if (this_angle < right_angle)
+                {
+                    right_point = point;
+                }
+
+                // 缺乏横跨-180/180度线的解决方法，因实际用不到，暂时不处理
+            }
+        }
+
+        std::vector<uint16_t> rings;
+        for (const auto &kv : ring_boundary_points)
+        {
+            rings.push_back(kv.first);
+        }
+        std::sort(rings.begin(), rings.end());
+        PointCloudPtr edge_cloud(new PointCloud); // 边界点
+
+        // add -----------------------------
+        PointCloudPtr group1(new PointCloud);
+        PointCloudPtr group2(new PointCloud);
+        PointCloudPtr group3(new PointCloud);
+        PointCloudPtr group4(new PointCloud);
+        double dis_point12 = 0.0;
+        double last_point_dis = 0.0;
+        bool start_lower_point = false;
+        for (size_t i = 0; i < rings.size(); ++i)
+        {
+            uint16_t ring = rings[i];
+            auto &left_point = ring_boundary_points[ring].first;
+            auto &right_point = ring_boundary_points[ring].second;
+            // edge_cloud->points.push_back(convertVelodyneToXYZI(left_point));
+            // edge_cloud->points.push_back(convertVelodyneToXYZI(right_point));
+            int left_inter, right_inter;
+            if (!start_lower_point)
+            {
+                if (i == 0)
+                {
+                    group1->points.push_back(convertVelodyneToXYZI(left_point));
+                    group4->points.push_back(convertVelodyneToXYZI(right_point));
+                    left_inter = 10;
+                    right_inter = 200;
+                    last_point_dis = computeEuclideanDistance(left_point, right_point);
+                }
+                else if (i == 1)
+                {
+                    group1->points.push_back(convertVelodyneToXYZI(left_point));
+                    group4->points.push_back(convertVelodyneToXYZI(right_point));
+                    left_inter = 10;
+                    right_inter = 200;
+                    double this_point_dis = computeEuclideanDistance(left_point, right_point);
+                    dis_point12 = this_point_dis - last_point_dis;
+                    last_point_dis = this_point_dis;
+                }
+                else
+                {
+                    double this_point_dis = computeEuclideanDistance(left_point, right_point);
+                    if ((this_point_dis - last_point_dis) >= 0.7 * dis_point12)
+                    {
+                        group1->points.push_back(convertVelodyneToXYZI(left_point));
+                        group4->points.push_back(convertVelodyneToXYZI(right_point));
+                        left_inter = 10;
+                        right_inter = 200;
+                    }
+                    else
+                    {
+                        group2->points.push_back(convertVelodyneToXYZI(left_point));
+                        group3->points.push_back(convertVelodyneToXYZI(right_point));
+                        left_inter = 60;
+                        right_inter = 120;
+                        start_lower_point = true;
+                    }
+                }
+            }
+            else
+            {
+                group2->points.push_back(convertVelodyneToXYZI(left_point));
+                group3->points.push_back(convertVelodyneToXYZI(right_point));
+                left_inter = 60;
+                right_inter = 120;
+            }
+            edge_cloud->points.push_back(convertVelodyneToXYZI(left_point, left_inter));
+            edge_cloud->points.push_back(convertVelodyneToXYZI(right_point, right_inter));
+        }
+        // 计算中心点坐标
+        float prev_x = 0.0f;
+        float prev_y = 0.0f;
+        float prev_z = 0.0f;
+        PointCloudPtr group(new PointCloud);
+
+        // 四个点坐标
+        if (group1->points.size() > 1 && group2->points.size() > 1 && group3->points.size() > 1 && group4->points.size() > 1)
+        {
+            PointType up_point = fitLineAndGetIntersection(group1, group4);
+            PointType left_point = fitLineAndGetIntersection(group1, group2);
+            PointType right_point = fitLineAndGetIntersection(group3, group4);
+            PointType lower_point = fitLineAndGetIntersection(group2, group3);
+
+            prev_x = (up_point.x + left_point.x + right_point.x + lower_point.x) / 4;
+            prev_y = (up_point.y + left_point.y + right_point.y + lower_point.y) / 4;
+            prev_z = (up_point.z + left_point.z + right_point.z + lower_point.z) / 4;
+
+            insertInterpolatnedPoints(up_point, left_point, 30, group);
+            insertInterpolatnedPoints(left_point, lower_point, 30, group);
+            insertInterpolatnedPoints(lower_point, right_point, 30, group);
+            insertInterpolatnedPoints(right_point, up_point, 30, group);
+            centroid_target.x = prev_x;
+            centroid_target.y = prev_y;
+            centroid_target.z = prev_z;
+            centroid_target.intensity = 10.0f;
+            group->points.push_back(centroid_target);
+        }
+        else
+        {
+            ROS_ERROR("Less than four rings, unable to calculate!");
+        }
+
+        // 发布生成的四边形 group
+        publishPointCloudMsg(input_target_center_pub, msg->header, group);
+
+        // 发布边缘点
+        publishPointCloudMsg(input_edge_cloud_pub, msg->header, edge_cloud);
+
+        // 发布过滤后的点云
+        publishPointCloudMsg(input_source_filtered_pub, msg->header, current_filtered_cloud);
+
+        if (!input_center_cloud->points.empty())
+        {
+            publishPointCloudMsg(input_all_centroid_pub, msg->header, input_center_cloud);
+        }
+        publishCubeMarker(input_pub_mark, msg->header.frame_id, input_box_lx, input_box_ly, input_box_lz,
+                          input_box_x, input_box_y, input_box_z, input_box_roll, input_box_pitch, input_box_yaw, input_marker_rgb);
+    }
+
+    //-----------------------------------------------------
+
     // 独立线程，发布 tf
     void publishTF()
     {
         ros::Rate rate(10); // Publish at 10 Hz
         while (ros::ok())
         {
-            if (!source_raw_cloud->empty() && !target_raw_cloud->empty())
+            if (source_frame != "initial" && target_frame !="initial")
             {
                 // Create a TransformStamped message
                 geometry_msgs::TransformStamped transformStamped;

@@ -82,7 +82,7 @@ public:
     string marker_A_topic;
     string marker_B_topic;
 
-    int source_lidar_queue_size; // Size of the source LiDAR queue
+    int lidar_queue_threshold; // Size of the source LiDAR queue
     double icp_score_threshold; // Threshold for ICP score
     double svd_threshold;
 
@@ -97,6 +97,8 @@ public:
 
     bool tf_publish;
 
+    int source_cloud_type, target_cloud_type;
+
     ParamServer()
         : nh(), private_nh("~") // Initialize node handles
     {
@@ -108,7 +110,7 @@ public:
         private_nh.param<string>("calibration_result_topic", calibration_result_topic, "/calibration_result");
         private_nh.param<string>("marker_A_topic", marker_A_topic, "/marker_A");
         private_nh.param<string>("marker_B_topic", marker_B_topic, "/marker_B");
-        private_nh.param<int>("source_lidar_queue_size", source_lidar_queue_size, 10);
+        private_nh.param<int>("lidar_queue_threshold", lidar_queue_threshold, 10);
         private_nh.param<double>("icp_score_threshold", icp_score_threshold, 0.1);
         private_nh.param<double>("calib_x", calib_x, 0.0);
         private_nh.param<double>("calib_y", calib_y, 0.0);
@@ -146,6 +148,9 @@ public:
         private_nh.param<double>("MaxCorrespondenceDistance", MaxCorrespondenceDistance, 0.1);
 
         private_nh.param<bool>("tf_publish", tf_publish, false);
+
+        private_nh.param<int>("source_cloud_type", source_cloud_type, 0);
+        private_nh.param<int>("target_cloud_type", target_cloud_type, 0);
     }
 };
 #endif // LIDAR_CALIB_HEADER_H
