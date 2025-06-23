@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package>
     <name>lidar_to_lidar_calibration</name>
-    <version>0.1.0</version>
+    <version>1.0.0</version>
     <description>lidar_to_lidar_calibration package</description>
     <maintainer email="bobby.xu@leapting.com">Xu Bobo</maintainer>
     <license>Apache-2.0</license>
