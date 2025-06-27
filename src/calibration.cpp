@@ -1087,11 +1087,11 @@ public:
             insertInterpolatnedPoints(left_point, lower_point, 30, group);
             insertInterpolatnedPoints(lower_point, right_point, 30, group);
             insertInterpolatnedPoints(right_point, up_point, 30, group);
-            centroid_target.x = prev_x;
-            centroid_target.y = prev_y;
-            centroid_target.z = prev_z;
-            centroid_target.intensity = 10.0f;
-            group->points.push_back(centroid_target);
+            input_centroid.x = prev_x;
+            input_centroid.y = prev_y;
+            input_centroid.z = prev_z;
+            input_centroid.intensity = 10.0f;
+            group->points.push_back(input_centroid);
         }
         else
         {
